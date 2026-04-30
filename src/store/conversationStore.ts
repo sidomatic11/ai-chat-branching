@@ -21,6 +21,31 @@ export type MessageNode = {
 
 type ApiMessage = { role: Role; content: string };
 
+export type SendMessageOptions = {
+  /**
+   * Parent node id to attach the new user/assistant pair under.
+   * - For normal sends, this should be the current assistant leaf.
+   * - `root` is allowed (first message).
+   */
+  parentId?: string;
+  /**
+   * If provided, reuse an existing user node as the new user turn.
+   * This is useful for UI2 creating an empty branch “placeholder” user that
+   * is only filled once the user actually types and sends.
+   */
+  existingUserId?: string;
+};
+
+export type SendMessageResult = { userId: string; assistantId: string };
+
+export type ParallelThreadResult = { userId: string; assistantId: string };
+
+export type BranchFromUserResult = {
+  frozenThroughId: string;
+  leftHeadUserId: string;
+  rightHeadUserId: string;
+};
+
 export type ConversationStore = {
   nodes: Record<string, MessageNode>;
   activePathIds: string[]; // ordered root → current leaf
@@ -29,7 +54,11 @@ export type ConversationStore = {
 
   // Actions
   clearConversation: () => void;
-  sendMessage: (content: string) => Promise<void>;
+  sendMessage: (content: string, options?: SendMessageOptions) => Promise<SendMessageResult | null>;
+  /** UI2: append empty user+assistant under root or an assistant (parallel branch). */
+  createParallelChildThread: (parentId: string) => ParallelThreadResult | null;
+  /** UI2: same graph op as createParallelChildThread; returns ids for canvas layout. */
+  branchFromUserMessage: (userNodeId: string) => BranchFromUserResult | null;
   editAndResend: (nodeId: string, newContent: string) => Promise<void>;
   regenerate: (nodeId: string) => Promise<void>;
   navigateUserBranch: (
@@ -45,7 +74,7 @@ export type ConversationStore = {
 };
 
 const STORAGE_KEY = 'branching-chat-prototype:v1';
-const ROOT_ID = 'root';
+export const ROOT_ID = 'root';
 
 function createRootNode(): MessageNode {
   return {
@@ -123,6 +152,13 @@ function getPathToRoot(
   return path.reverse();
 }
 
+export function getPathToRootIds(
+  nodes: Record<string, MessageNode>,
+  leafId: string,
+): string[] {
+  return getPathToRoot(nodes, leafId);
+}
+
 function getDeepestLeafId(
   nodes: Record<string, MessageNode>,
   startId: string,
@@ -162,6 +198,13 @@ function getMessagesForApi(
     }
   }
   return messages;
+}
+
+export function getMessagesForApiFromLeaf(
+  nodes: Record<string, MessageNode>,
+  leafId: string,
+): ApiMessage[] {
+  return getMessagesForApi(nodes, getPathToRoot(nodes, leafId));
 }
 
 function addNode(nodes: Record<string, MessageNode>, node: MessageNode) {
@@ -257,6 +300,60 @@ export const useConversationStore = create<ConversationStore>()(
 
   clearError: () => set({ error: null }),
 
+  createParallelChildThread: (parentId: string) => {
+    const { nodes } = get();
+    const parent = nodes[parentId];
+    if (!parent) return null;
+    if (parent.role !== 'root' && parent.role !== 'assistant') return null;
+
+    const userId = uuidv4();
+    const assistantId = uuidv4();
+    const createdAt = Date.now();
+
+    set(state => {
+      const nextNodes = { ...state.nodes };
+      addNode(nextNodes, {
+        id: userId,
+        role: 'user',
+        content: '',
+        parentId,
+        childIds: [],
+        createdAt,
+      });
+      addNode(nextNodes, {
+        id: assistantId,
+        role: 'assistant',
+        content: '',
+        parentId: userId,
+        childIds: [],
+        createdAt: createdAt + 1,
+      });
+      return { nodes: nextNodes };
+    });
+
+    return { userId, assistantId };
+  },
+
+  branchFromUserMessage: (userNodeId: string) => {
+    const { nodes } = get();
+    const user = nodes[userNodeId];
+    if (!user || user.role !== 'user') return null;
+
+    const parentId = user.parentId ?? ROOT_ID;
+    const parent = nodes[parentId];
+    if (!parent) return null;
+    if (parent.role !== 'root' && parent.role !== 'assistant') return null;
+
+    const created = get().createParallelChildThread(parentId);
+    if (!created) return null;
+
+    return {
+      frozenThroughId: parentId,
+      leftHeadUserId: userNodeId,
+      rightHeadUserId: created.userId,
+    };
+  },
+
   setActivePath: (leafId: string) => {
     set(state => ({
       activePathIds: getPathToRoot(state.nodes, leafId),
@@ -322,36 +419,77 @@ export const useConversationStore = create<ConversationStore>()(
     get().setActivePath(getDeepestLeafId(nodes, nextAssistantId));
   },
 
-  sendMessage: async (content: string) => {
+  sendMessage: async (content: string, options?: SendMessageOptions) => {
     const trimmed = content.trim();
-    if (!trimmed) return;
-    if (get().isStreaming) return;
+    if (!trimmed) return null;
+    if (get().isStreaming) return null;
 
-    const userId = uuidv4();
-    const assistantId = uuidv4();
+    const existingUserId = options?.existingUserId;
+    if (existingUserId) {
+      const existing = get().nodes[existingUserId];
+      if (!existing || existing.role !== 'user') return null;
+    }
+
     const createdAt = Date.now();
+    const initialParentId =
+      options?.parentId ??
+      get().activePathIds[get().activePathIds.length - 1] ??
+      ROOT_ID;
+
+    let userId = existingUserId ?? uuidv4();
+    let assistantId = uuidv4();
 
     set(state => {
-      const parentId = state.activePathIds[state.activePathIds.length - 1] ?? ROOT_ID;
       const nodes = { ...state.nodes };
 
-      addNode(nodes, {
-        id: userId,
-        role: 'user',
-        content: trimmed,
-        parentId,
-        childIds: [],
-        createdAt,
-      });
+      if (existingUserId) {
+        const existingUser = nodes[existingUserId];
+        if (!existingUser || existingUser.role !== 'user') return state;
 
-      addNode(nodes, {
-        id: assistantId,
-        role: 'assistant',
-        content: '',
-        parentId: userId,
-        childIds: [],
-        createdAt: createdAt + 1,
-      });
+        // Prefer the latest assistant under this user (latest-only policy).
+        const existingAssistantId =
+          existingUser.childIds[existingUser.childIds.length - 1];
+        const existingAssistant = existingAssistantId
+          ? nodes[existingAssistantId]
+          : undefined;
+
+        if (existingAssistant && existingAssistant.role === 'assistant') {
+          assistantId = existingAssistant.id;
+        } else {
+          addNode(nodes, {
+            id: assistantId,
+            role: 'assistant',
+            content: '',
+            parentId: existingUserId,
+            childIds: [],
+            createdAt: createdAt + 1,
+          });
+        }
+
+        nodes[existingUserId] = {
+          ...existingUser,
+          content: trimmed,
+        };
+        userId = existingUserId;
+      } else {
+        addNode(nodes, {
+          id: userId,
+          role: 'user',
+          content: trimmed,
+          parentId: initialParentId,
+          childIds: [],
+          createdAt,
+        });
+
+        addNode(nodes, {
+          id: assistantId,
+          role: 'assistant',
+          content: '',
+          parentId: userId,
+          childIds: [],
+          createdAt: createdAt + 1,
+        });
+      }
 
       return {
         nodes,
@@ -382,9 +520,11 @@ export const useConversationStore = create<ConversationStore>()(
       });
 
       set({ isStreaming: false });
+      return { userId, assistantId };
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown error';
       set({ isStreaming: false, error: message });
+      return null;
     }
   },
 
