@@ -5,7 +5,7 @@ import { useConversationStore } from '@/store/conversationStore';
 import { Input } from './Input';
 import { MessageBubble } from './MessageBubble';
 
-export function ChatView() {
+export function ChatViewUi1() {
   const nodes = useConversationStore(s => s.nodes);
   const activePathIds = useConversationStore(s => s.activePathIds);
   const isStreaming = useConversationStore(s => s.isStreaming);
@@ -29,9 +29,7 @@ export function ChatView() {
       <header className="border-b border-zinc-200 bg-white">
         <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 py-3">
           <div className="text-sm font-medium">Branching Chat Prototype</div>
-          {isStreaming ? (
-            <div className="text-xs text-zinc-500">Streaming…</div>
-          ) : null}
+          {isStreaming ? <div className="text-xs text-zinc-500">Streaming…</div> : null}
         </div>
       </header>
 
@@ -55,8 +53,7 @@ export function ChatView() {
             {messages.length === 0 ? (
               <div className="rounded-lg border border-dashed border-zinc-300 bg-white p-4 text-sm text-zinc-600">
                 Send a message to start. Use <span className="font-medium">Edit</span>{' '}
-                or <span className="font-medium">Regenerate</span> to create
-                branches.
+                or <span className="font-medium">Regenerate</span> to create branches.
               </div>
             ) : null}
 

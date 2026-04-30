@@ -5,6 +5,7 @@ import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import { shallow } from 'zustand/shallow';
 import { v4 as uuidv4 } from 'uuid';
+import { UI_STORAGE_KEY, useUiStore } from './uiStore';
 
 export type Role = 'user' | 'assistant';
 type InternalRole = Role | 'root';
@@ -27,6 +28,7 @@ export type ConversationStore = {
   error: string | null;
 
   // Actions
+  clearConversation: () => void;
   sendMessage: (content: string) => Promise<void>;
   editAndResend: (nodeId: string, newContent: string) => Promise<void>;
   regenerate: (nodeId: string) => Promise<void>;
@@ -121,6 +123,30 @@ function getPathToRoot(
   return path.reverse();
 }
 
+function getDeepestLeafId(
+  nodes: Record<string, MessageNode>,
+  startId: string,
+): string {
+  // Follow the most recently-created child chain to the deepest descendant.
+  // This lets branch navigation restore the full continuation of a branch,
+  // not just the first assistant message at the split point.
+  let cursor = startId;
+  const visited = new Set<string>();
+
+  while (true) {
+    if (visited.has(cursor)) return cursor;
+    visited.add(cursor);
+
+    const node = nodes[cursor];
+    if (!node) return cursor;
+
+    const nextId = node.childIds[node.childIds.length - 1];
+    if (!nextId) return cursor;
+
+    cursor = nextId;
+  }
+}
+
 function getMessagesForApi(
   nodes: Record<string, MessageNode>,
   pathIds: string[],
@@ -205,6 +231,30 @@ export const useConversationStore = create<ConversationStore>()(
   subscribeWithSelector((set, get) => ({
   ...createInitialState(),
 
+  clearConversation: () => {
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.removeItem(STORAGE_KEY);
+        window.localStorage.removeItem(UI_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+    }
+    useUiStore.getState().resetUi();
+    if (typeof window !== 'undefined' && persistTimer !== null) {
+      window.clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+
+    const root = createRootNode();
+    set({
+      nodes: { [root.id]: root },
+      activePathIds: [root.id],
+      isStreaming: false,
+      error: null,
+    });
+  },
+
   clearError: () => set({ error: null }),
 
   setActivePath: (leafId: string) => {
@@ -243,7 +293,7 @@ export const useConversationStore = create<ConversationStore>()(
     const leafAssistantId = assistantIds[assistantIds.length - 1];
     if (!leafAssistantId) return;
 
-    get().setActivePath(leafAssistantId);
+    get().setActivePath(getDeepestLeafId(nodes, leafAssistantId));
   },
 
   navigateSibling: (nodeId, direction) => {
@@ -269,7 +319,7 @@ export const useConversationStore = create<ConversationStore>()(
 
     const nextAssistantId = assistantIds[nextIndex];
     if (!nextAssistantId) return;
-    get().setActivePath(nextAssistantId);
+    get().setActivePath(getDeepestLeafId(nodes, nextAssistantId));
   },
 
   sendMessage: async (content: string) => {
