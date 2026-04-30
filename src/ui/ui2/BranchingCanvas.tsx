@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { ROOT_ID, useConversationStore } from '@/store/conversationStore';
+import { getExpandedLinearChainIds } from '@/ui/ui2/canvasChain';
 import { ConnectorsSvg } from '@/ui/ui2/ConnectorsSvg';
 import { GRID_SIZE, NODE_WIDTH, layoutAllPanels } from '@/ui/ui2/canvasLayout';
 import type {
@@ -25,6 +26,8 @@ import {
   latestAssistantId,
 } from '@/ui/ui2/graphPath';
 
+type PanelLayoutMode = 'canvas' | 'linear';
+
 export function BranchingCanvas() {
   const nodes = useConversationStore(s => s.nodes);
   const sendMessage = useConversationStore(s => s.sendMessage);
@@ -35,6 +38,9 @@ export function BranchingCanvas() {
 
   const panelEls = useRef<Map<string, HTMLDivElement>>(new Map());
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const expandedModeRef = useRef(false);
+
+  const [expandedPanelId, setExpandedPanelId] = useState<string | null>(null);
 
   const [pan, setPan] = useState({ x: 50, y: 80 });
   const [zoom, setZoom] = useState(1);
@@ -75,6 +81,28 @@ export function BranchingCanvas() {
     }
   }, [nodeCount, nodes]);
 
+  expandedModeRef.current = expandedPanelId != null;
+
+  const expandedChainIds = useMemo(() => {
+    if (!expandedPanelId || !panels[expandedPanelId]) return [];
+    return getExpandedLinearChainIds(panels, expandedPanelId);
+  }, [expandedPanelId, panels]);
+
+  const expandedChainSet = useMemo(
+    () => new Set(expandedChainIds),
+    [expandedChainIds],
+  );
+
+  useEffect(() => {
+    if (expandedPanelId && !panels[expandedPanelId]) {
+      setExpandedPanelId(null);
+    }
+  }, [expandedPanelId, panels]);
+
+  const handleExpandToggle = useCallback((panelId: string) => {
+    setExpandedPanelId(prev => (prev === panelId ? null : panelId));
+  }, []);
+
   const measure = useCallback((panelId: string) => {
     const el = panelEls.current.get(panelId);
     return el ? el.offsetHeight : 260;
@@ -89,6 +117,7 @@ export function BranchingCanvas() {
   }, [panels]);
 
   const relayout = useCallback(() => {
+    if (expandedPanelId) return;
     if (!rootPanelId || !panels[rootPanelId]) return;
     const pos = layoutAllPanels(
       rootPanelId,
@@ -98,7 +127,7 @@ export function BranchingCanvas() {
       40,
     );
     setPositions(pos);
-  }, [rootPanelId, panelBase, measure, panels]);
+  }, [expandedPanelId, rootPanelId, panelBase, measure, panels]);
 
   useLayoutEffect(() => {
     let raf2 = 0;
@@ -118,6 +147,16 @@ export function BranchingCanvas() {
   }, [pan.x, pan.y, zoom]);
 
   const onWheel = useCallback((e: WheelEvent) => {
+    if (expandedModeRef.current) {
+      // Pinch-zoom-out on trackpad (ctrl/cmd + wheel) exits linear mode.
+      const wantsZoom = e.ctrlKey || e.metaKey;
+      if (wantsZoom && e.deltaY > 0) {
+        e.preventDefault();
+        setExpandedPanelId(null);
+      }
+      return;
+    }
+
     // Miro-style:
     // - Two-finger scroll pans
     // - Zoom only on pinch (trackpad typically sets ctrlKey) or cmd+scroll
@@ -160,7 +199,7 @@ export function BranchingCanvas() {
       panRef.current = next;
       return next;
     });
-  }, []);
+  }, [setExpandedPanelId]);
 
   useEffect(() => {
     const el = viewportRef.current;
@@ -170,19 +209,55 @@ export function BranchingCanvas() {
     const onWheelNative = (e: WheelEvent) => onWheel(e);
     el.addEventListener('wheel', onWheelNative, { passive: false });
 
-    // Safari gesture events (trackpad pinch) can zoom the page unless prevented.
-    const onGesture = (e: Event) => e.preventDefault();
-    el.addEventListener('gesturestart', onGesture, { passive: false } as AddEventListenerOptions);
-    el.addEventListener('gesturechange', onGesture, { passive: false } as AddEventListenerOptions);
-    el.addEventListener('gestureend', onGesture, { passive: false } as AddEventListenerOptions);
+    // Safari: WebKit gesture events — pinch closed (scale < 1) exits linear mode.
+    const pinchTrack = { active: false, minScale: 1 };
+
+    const onGestureStart = (e: Event) => {
+      if (expandedModeRef.current) {
+        pinchTrack.active = true;
+        pinchTrack.minScale = 1;
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+    };
+
+    const onGestureChange = (e: Event) => {
+      if (expandedModeRef.current) {
+        const scale = (e as unknown as { scale?: number }).scale ?? 1;
+        if (pinchTrack.active) {
+          pinchTrack.minScale = Math.min(pinchTrack.minScale, scale);
+        }
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+    };
+
+    const onGestureEnd = (e: Event) => {
+      if (expandedModeRef.current) {
+        if (pinchTrack.active && pinchTrack.minScale < 0.92) {
+          setExpandedPanelId(null);
+        }
+        pinchTrack.active = false;
+        pinchTrack.minScale = 1;
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+    };
+
+    el.addEventListener('gesturestart', onGestureStart, { passive: false } as AddEventListenerOptions);
+    el.addEventListener('gesturechange', onGestureChange, { passive: false } as AddEventListenerOptions);
+    el.addEventListener('gestureend', onGestureEnd, { passive: false } as AddEventListenerOptions);
 
     return () => {
       el.removeEventListener('wheel', onWheelNative as EventListener);
-      el.removeEventListener('gesturestart', onGesture as EventListener);
-      el.removeEventListener('gesturechange', onGesture as EventListener);
-      el.removeEventListener('gestureend', onGesture as EventListener);
+      el.removeEventListener('gesturestart', onGestureStart as EventListener);
+      el.removeEventListener('gesturechange', onGestureChange as EventListener);
+      el.removeEventListener('gestureend', onGestureEnd as EventListener);
     };
-  }, [onWheel]);
+  }, [onWheel, setExpandedPanelId]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -193,7 +268,9 @@ export function BranchingCanvas() {
     };
     const onUp = () => {
       setDrag(d => ({ ...d, active: false }));
-      if (viewportRef.current) viewportRef.current.style.cursor = 'grab';
+      if (viewportRef.current) {
+        viewportRef.current.style.cursor = expandedModeRef.current ? 'default' : 'grab';
+      }
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -203,16 +280,14 @@ export function BranchingCanvas() {
     };
   }, [drag.active, drag.ox, drag.oy]);
 
-  const onCanvasMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t?.closest?.('[data-panel-node]')) return;
-      const p = panRef.current;
-      setDrag({ active: true, ox: e.clientX - p.x, oy: e.clientY - p.y });
-      if (viewportRef.current) viewportRef.current.style.cursor = 'grabbing';
-    },
-    [],
-  );
+  const onCanvasMouseDown = useCallback((e: React.MouseEvent) => {
+    if (expandedModeRef.current) return;
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.('[data-panel-node]')) return;
+    const p = panRef.current;
+    setDrag({ active: true, ox: e.clientX - p.x, oy: e.clientY - p.y });
+    if (viewportRef.current) viewportRef.current.style.cursor = 'grabbing';
+  }, []);
 
   const setPanelEl = useCallback((panelId: string, el: HTMLDivElement | null) => {
     if (el) panelEls.current.set(panelId, el);
@@ -388,90 +463,185 @@ export function BranchingCanvas() {
   const patternY = pan.y % (GRID_SIZE * zoom);
   const patternSize = GRID_SIZE * zoom;
 
+  const isExpanded = expandedPanelId != null;
+
+  const graphPanels = useMemo(() => {
+    const list = Object.values(panels);
+    if (!isExpanded) return list;
+    return list.filter(p => !expandedChainSet.has(p.id));
+  }, [panels, isExpanded, expandedChainSet]);
+
   return (
     <div
       ref={viewportRef}
-      className="relative h-full min-h-0 w-full cursor-grab overflow-hidden bg-zinc-950"
+      className={
+        isExpanded
+          ? 'relative h-full min-h-0 w-full cursor-default overflow-y-auto bg-zinc-950'
+          : 'relative h-full min-h-0 w-full cursor-grab overflow-hidden bg-zinc-950'
+      }
       onMouseDown={onCanvasMouseDown}
     >
-      <svg className="pointer-events-none absolute inset-0 h-full w-full">
-        <defs>
-          <pattern
-            id="ui2-dot-grid"
-            x={patternX}
-            y={patternY}
-            width={patternSize}
-            height={patternSize}
-            patternUnits="userSpaceOnUse"
-          >
-            <circle cx="1.2" cy="1.2" r="1" fill="rgba(255,255,255,0.12)" />
-          </pattern>
-        </defs>
-        <rect width="100%" height="100%" fill="url(#ui2-dot-grid)" />
-      </svg>
-
       <div
-        className="absolute left-0 top-0 origin-top-left will-change-transform"
-        style={{ transform: applyTransform() }}
+        className={
+          isExpanded
+            ? 'pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-200'
+            : 'absolute inset-0 opacity-100 transition-opacity duration-200'
+        }
+        aria-hidden={isExpanded}
       >
-        <ConnectorsSvg panels={panelBase} positions={positions} measure={measure} />
+        <svg className="pointer-events-none absolute inset-0 h-full w-full">
+          <defs>
+            <pattern
+              id="ui2-dot-grid"
+              x={patternX}
+              y={patternY}
+              width={patternSize}
+              height={patternSize}
+              patternUnits="userSpaceOnUse"
+            >
+              <circle cx="1.2" cy="1.2" r="1" fill="rgba(255,255,255,0.12)" />
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#ui2-dot-grid)" />
+        </svg>
 
-        {Object.values(panels).map(p => {
-          const pos = positions[p.id] ?? { x: 0, y: 0 };
-          if (p.kind === 'frozen') {
+        <div
+          className="absolute left-0 top-0 origin-top-left will-change-transform"
+          style={{ transform: applyTransform() }}
+        >
+          <ConnectorsSvg panels={panelBase} positions={positions} measure={measure} />
+
+          {graphPanels.map(p => {
+            const pos = positions[p.id] ?? { x: 0, y: 0 };
+            if (p.kind === 'frozen') {
+              return (
+                <FrozenPanel
+                  key={p.id}
+                  panel={p}
+                  nodes={nodes}
+                  layout="canvas"
+                  left={pos.x}
+                  top={pos.y}
+                  setPanelEl={setPanelEl}
+                  isExpandedFocus={false}
+                  onExpandToggle={() => handleExpandToggle(p.id)}
+                  isStreaming={isStreaming}
+                />
+              );
+            }
             return (
-              <FrozenPanel
+              <LivePanel
                 key={p.id}
                 panel={p}
                 nodes={nodes}
+                layout="canvas"
                 left={pos.x}
                 top={pos.y}
+                isStreaming={isStreaming}
                 setPanelEl={setPanelEl}
+                onSend={handleSend}
+                onUserBubbleClick={handleUserBubbleClick}
+                isExpandedFocus={false}
+                onExpandToggle={() => handleExpandToggle(p.id)}
+                onFocusPanel={() => {
+                  const tail =
+                    p.tailLeafId ??
+                    (p.headUserId
+                      ? computeLatestLeafFromUserHead(nodes, p.headUserId)
+                      : null);
+                  if (tail) setActivePath(tail);
+                }}
               />
             );
-          }
-          return (
-            <LivePanel
-              key={p.id}
-              panel={p}
-              nodes={nodes}
-              left={pos.x}
-              top={pos.y}
-              isStreaming={isStreaming}
-              setPanelEl={setPanelEl}
-              onSend={handleSend}
-              onUserBubbleClick={handleUserBubbleClick}
-              onFocusPanel={() => {
-                const tail =
-                  p.tailLeafId ??
-                  (p.headUserId
-                    ? computeLatestLeafFromUserHead(nodes, p.headUserId)
-                    : null);
-                if (tail) setActivePath(tail);
-              }}
-            />
-          );
-        })}
+          })}
+        </div>
       </div>
 
-      <div className="pointer-events-none absolute bottom-3 right-3 rounded-md bg-black/50 px-2 py-1 text-[11px] text-white/80 tabular-nums">
-        {Math.round(zoom * 100)}%
-      </div>
+      {isExpanded ? (
+        <div className="relative z-10 flex flex-col items-stretch gap-0 px-3 py-4 pb-10">
+          {expandedChainIds.map(id => {
+            const p = panels[id];
+            if (!p) return null;
+            const linearRole: 'focus' | 'ancestor' =
+              id === expandedPanelId ? 'focus' : 'ancestor';
+            if (p.kind === 'frozen') {
+              return (
+                <FrozenPanel
+                  key={p.id}
+                  panel={p}
+                  nodes={nodes}
+                  layout="linear"
+                  linearRole={linearRole}
+                  left={0}
+                  top={0}
+                  setPanelEl={setPanelEl}
+                  isExpandedFocus={linearRole === 'focus'}
+                  onExpandToggle={() => setExpandedPanelId(null)}
+                  isStreaming={isStreaming}
+                  linearBranchNav={getLinearBranchNav(p, panels, setExpandedPanelId)}
+                />
+              );
+            }
+            return (
+              <LivePanel
+                key={p.id}
+                panel={p}
+                nodes={nodes}
+                layout="linear"
+                linearRole={linearRole}
+                left={0}
+                top={0}
+                isStreaming={isStreaming}
+                setPanelEl={setPanelEl}
+                onSend={handleSend}
+                onUserBubbleClick={handleUserBubbleClick}
+                isExpandedFocus={linearRole === 'focus'}
+                onExpandToggle={() => setExpandedPanelId(null)}
+                linearBranchNav={getLinearBranchNav(p, panels, setExpandedPanelId)}
+                onFocusPanel={() => {
+                  const tail =
+                    p.tailLeafId ??
+                    (p.headUserId
+                      ? computeLatestLeafFromUserHead(nodes, p.headUserId)
+                      : null);
+                  if (tail) setActivePath(tail);
+                }}
+              />
+            );
+          })}
+        </div>
+      ) : null}
+
+      {!isExpanded ? (
+        <div className="pointer-events-none absolute bottom-3 right-3 rounded-md bg-black/50 px-2 py-1 text-[11px] text-white/80 tabular-nums">
+          {Math.round(zoom * 100)}%
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function ExpandNodeButton() {
+function ExpandNodeButton({
+  isExpandedFocus,
+  onPress,
+}: {
+  isExpandedFocus: boolean;
+  onPress: () => void;
+}) {
   return (
     <button
       type="button"
       className="-mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition hover:bg-zinc-200/80"
-      aria-label="Expand content"
+      aria-expanded={isExpandedFocus}
+      aria-label={isExpandedFocus ? 'Collapse to canvas' : 'Expand linear view'}
       onMouseDown={e => e.stopPropagation()}
-      onClick={e => e.stopPropagation()}
+      onClick={e => {
+        e.stopPropagation();
+        onPress();
+      }}
     >
       <span className="material-symbols-rounded text-[18px] leading-none" aria-hidden>
-        expand_content
+        {isExpandedFocus ? 'close_fullscreen' : 'expand_content'}
       </span>
     </button>
   );
@@ -489,36 +659,150 @@ function headerLabel(
   return 'AI Chat';
 }
 
+type LinearBranchNav = {
+  index: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+};
+
+/** Canvas-level siblings: any panel (live or frozen) under a parent with 2+ children. */
+function getLinearBranchNav(
+  panel: CanvasPanelState,
+  panels: Record<string, CanvasPanelState>,
+  setExpandedPanelId: (id: string) => void,
+): LinearBranchNav | null {
+  const parentId = panel.canvasParentId;
+  if (!parentId) return null;
+  const parent = panels[parentId];
+  if (!parent || parent.canvasChildIds.length <= 1) return null;
+  const ids = parent.canvasChildIds;
+  const idx = ids.indexOf(panel.id);
+  if (idx < 0) return null;
+  return {
+    index: idx,
+    total: ids.length,
+    onPrev: () => {
+      const nextIdx = (idx - 1 + ids.length) % ids.length;
+      setExpandedPanelId(ids[nextIdx]!);
+    },
+    onNext: () => {
+      const nextIdx = (idx + 1) % ids.length;
+      setExpandedPanelId(ids[nextIdx]!);
+    },
+  };
+}
+
+function LinearBranchNavRow({
+  nav,
+  isStreaming,
+  onExpandToggle,
+}: {
+  nav: LinearBranchNav;
+  isStreaming: boolean;
+  onExpandToggle: () => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] text-zinc-600">
+      <div className="flex min-w-0 flex-1 items-center justify-center gap-2">
+        <button
+          type="button"
+          disabled={isStreaming}
+          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs font-medium tabular-nums hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Previous branch"
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => {
+            e.stopPropagation();
+            nav.onPrev();
+          }}
+        >
+          &lt;
+        </button>
+        <span className="shrink-0 tabular-nums">
+          {nav.index + 1} / {nav.total}
+        </span>
+        <button
+          type="button"
+          disabled={isStreaming}
+          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs font-medium tabular-nums hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Next branch"
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => {
+            e.stopPropagation();
+            nav.onNext();
+          }}
+        >
+          &gt;
+        </button>
+      </div>
+      <ExpandNodeButton isExpandedFocus onPress={onExpandToggle} />
+    </div>
+  );
+}
+
 function FrozenPanel({
   panel,
   nodes,
+  layout,
+  linearRole,
   left,
   top,
   setPanelEl,
+  isExpandedFocus,
+  onExpandToggle,
+  linearBranchNav,
+  isStreaming,
 }: {
   panel: FrozenPanelState;
   nodes: Record<string, import('@/store/conversationStore').MessageNode>;
+  layout: PanelLayoutMode;
+  linearRole?: 'focus' | 'ancestor';
   left: number;
   top: number;
   setPanelEl: (id: string, el: HTMLDivElement | null) => void;
+  isExpandedFocus: boolean;
+  onExpandToggle: () => void;
+  linearBranchNav?: LinearBranchNav | null;
+  isStreaming: boolean;
 }) {
   const flat = flattenFrozenThrough(nodes, panel.throughId);
+  const isLinear = layout === 'linear';
+  const nav = isLinear ? linearBranchNav ?? null : null;
+
+  const cardClass = [
+    'flex flex-col overflow-hidden bg-white transition-[min-width,box-shadow] duration-300 ease-out',
+    isLinear
+      ? 'relative z-10 w-full max-w-2xl shrink-0 self-center'
+      : 'absolute z-[1] rounded-[14px] shadow-[0_4px_24px_rgba(0,0,0,0.35)]',
+  ].join(' ');
 
   return (
     <div
       data-panel-node
       ref={el => setPanelEl(panel.id, el)}
-      className="absolute flex flex-col rounded-[14px] bg-white shadow-[0_4px_24px_rgba(0,0,0,0.35)]"
-      style={{ left, top, width: NODE_WIDTH, zIndex: 1 }}
+      className={cardClass}
+      style={
+        isLinear
+          ? undefined
+          : { left, top, width: NODE_WIDTH, zIndex: 1 }
+      }
       onMouseDown={e => e.stopPropagation()}
     >
-      <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] font-semibold tracking-wide text-zinc-600">
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-300" />
-          <span className="truncate">{headerLabel(panel, true)}</span>
+      {!isLinear ? (
+        <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] font-semibold tracking-wide text-zinc-600">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-300" />
+            <span className="truncate">{headerLabel(panel, true)}</span>
+          </div>
+          <ExpandNodeButton isExpandedFocus={isExpandedFocus} onPress={onExpandToggle} />
         </div>
-        <ExpandNodeButton />
-      </div>
+      ) : nav ? (
+        <LinearBranchNavRow
+          nav={nav}
+          isStreaming={isStreaming}
+          onExpandToggle={onExpandToggle}
+        />
+      ) : null}
       <div className="flex flex-col gap-1.5 px-2 py-2.5">
         {flat.length === 0 ? (
           <p className="px-2 py-6 text-center text-[12px] text-zinc-400">(empty)</p>
@@ -544,10 +828,12 @@ function FrozenPanel({
           ))
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-1.5 rounded-b-[14px] border-t border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
-        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
-        Branched
-      </div>
+      {!isLinear ? (
+        <div className="flex shrink-0 items-center gap-1.5 rounded-b-[14px] border-t border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
+          Branched
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -555,6 +841,8 @@ function FrozenPanel({
 function LivePanel({
   panel,
   nodes,
+  layout,
+  linearRole,
   left,
   top,
   isStreaming,
@@ -562,9 +850,14 @@ function LivePanel({
   onSend,
   onUserBubbleClick,
   onFocusPanel,
+  isExpandedFocus,
+  onExpandToggle,
+  linearBranchNav,
 }: {
   panel: LivePanelState;
   nodes: Record<string, import('@/store/conversationStore').MessageNode>;
+  layout: PanelLayoutMode;
+  linearRole?: 'focus' | 'ancestor';
   left: number;
   top: number;
   isStreaming: boolean;
@@ -576,6 +869,9 @@ function LivePanel({
     flatIndex: number,
   ) => void;
   onFocusPanel: () => void;
+  isExpandedFocus: boolean;
+  onExpandToggle: () => void;
+  linearBranchNav?: LinearBranchNav | null;
 }) {
   const [draft, setDraft] = useState('');
 
@@ -586,24 +882,49 @@ function LivePanel({
   const dotColor =
     panel.canvasChildIds.length > 0 ? 'bg-zinc-300' : 'bg-emerald-600';
 
+  const isLinear = layout === 'linear';
+
+  const nav = isLinear ? linearBranchNav ?? null : null;
+
+  const cardClass = [
+    'flex flex-col bg-white transition-[min-width,box-shadow] duration-300 ease-out',
+    isLinear
+      ? 'relative z-10 w-full max-w-2xl shrink-0 self-center'
+      : 'absolute z-[1] rounded-[14px] shadow-[0_4px_24px_rgba(0,0,0,0.35)]',
+  ].join(' ');
+
   return (
     <div
       data-panel-node
       ref={el => setPanelEl(panel.id, el)}
-      className="absolute flex flex-col rounded-[14px] bg-white shadow-[0_4px_24px_rgba(0,0,0,0.35)]"
-      style={{ left, top, width: NODE_WIDTH, zIndex: 1 }}
+      className={cardClass}
+      style={
+        isLinear
+          ? undefined
+          : { left, top, width: NODE_WIDTH, zIndex: 1 }
+      }
       onMouseDown={e => {
         e.stopPropagation();
-        onFocusPanel();
+        if (!isLinear) onFocusPanel();
       }}
     >
-      <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] font-semibold tracking-wide text-zinc-600">
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
-          <span className="truncate">{headerLabel(panel, false)}</span>
+      {isLinear ? (
+        nav ? (
+          <LinearBranchNavRow
+            nav={nav}
+            isStreaming={isStreaming}
+            onExpandToggle={onExpandToggle}
+          />
+        ) : null
+      ) : (
+        <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] font-semibold tracking-wide text-zinc-600">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
+            <span className="truncate">{headerLabel(panel, false)}</span>
+          </div>
+          <ExpandNodeButton isExpandedFocus={isExpandedFocus} onPress={onExpandToggle} />
         </div>
-        <ExpandNodeButton />
-      </div>
+      )}
 
       <div className="flex flex-col gap-1.5 px-2 py-2.5">
         {!panel.headUserId ? (
@@ -618,6 +939,7 @@ function LivePanel({
           flat.map((msg, i) => {
             const isUser = msg.role === 'user';
             const canBranch =
+              layout === 'canvas' &&
               isUser &&
               showInput &&
               !isStreaming &&
