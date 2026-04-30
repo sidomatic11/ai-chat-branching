@@ -461,6 +461,22 @@ export function BranchingCanvas() {
   );
 }
 
+function ExpandNodeButton() {
+  return (
+    <button
+      type="button"
+      className="-mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition hover:bg-zinc-200/80"
+      aria-label="Expand content"
+      onMouseDown={e => e.stopPropagation()}
+      onClick={e => e.stopPropagation()}
+    >
+      <span className="material-symbols-rounded text-[18px] leading-none" aria-hidden>
+        expand_content
+      </span>
+    </button>
+  );
+}
+
 function headerLabel(
   panel: LivePanelState | FrozenPanelState,
   frozen: boolean,
@@ -496,9 +512,12 @@ function FrozenPanel({
       style={{ left, top, width: NODE_WIDTH, zIndex: 1 }}
       onMouseDown={e => e.stopPropagation()}
     >
-      <div className="flex shrink-0 items-center gap-1.5 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] font-semibold tracking-wide text-zinc-600">
-        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-300" />
-        {headerLabel(panel, true)}
+      <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] font-semibold tracking-wide text-zinc-600">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-300" />
+          <span className="truncate">{headerLabel(panel, true)}</span>
+        </div>
+        <ExpandNodeButton />
       </div>
       <div className="flex flex-col gap-1.5 px-2 py-2.5">
         {flat.length === 0 ? (
@@ -578,9 +597,12 @@ function LivePanel({
         onFocusPanel();
       }}
     >
-      <div className="flex shrink-0 items-center gap-1.5 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] font-semibold tracking-wide text-zinc-600">
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
-        {headerLabel(panel, false)}
+      <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] font-semibold tracking-wide text-zinc-600">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
+          <span className="truncate">{headerLabel(panel, false)}</span>
+        </div>
+        <ExpandNodeButton />
       </div>
 
       <div className="flex flex-col gap-1.5 px-2 py-2.5">
