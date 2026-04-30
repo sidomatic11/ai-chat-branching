@@ -1,36 +1,78 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Branching chat prototype (Next.js + Zustand)
+
+A small Next.js app for prototyping **branching conversation UX patterns** (similar to Claude’s chat branching).
+
+**Core constraint**: all conversation tree + streaming logic lives in the Zustand store (`src/store/conversationStore.ts`). UI experiments live under `src/ui/`* and must only read state + call actions.
 
 ## Getting Started
 
-First, run the development server:
+### 1) Install
+
+```bash
+npm install
+```
+
+### 2) Configure environment
+
+Create `.env.local`:
+
+```bash
+GOOGLE_GENERATIVE_AI_API_KEY=...
+GOOGLE_GEMINI_MODEL=gemini-2.0-flash
+```
+
+`GOOGLE_GEMINI_MODEL` is optional (defaults to `gemini-2.0-flash`).
+
+### 3) Run the dev server
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How to use (reference UI)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- **Send**: type in the input and press Enter (Shift+Enter = newline).
+- **Edit + resend**: click **Edit** on a user message → change text → **Resend**.
+This creates a **new branch** (a new user sibling + a new assistant response).
+- **Navigate user branches**: on a user message that has been edited/resend multiple times, use the **upper** `< 2 / 3 >` control next to that user message to switch between the different user-sibling branches created at that point.
+- **Regenerate**: click **Regenerate** on an assistant message.
+This creates an **additional assistant variant** under the same user message.
+- **Navigate assistant variants**: on a user message, use the **lower** `< 2 / 3 >` control to switch between assistant variants (only appears after you’ve regenerated at least once).
+Switching updates the active path immediately.
 
-## Learn More
+## Project layout
 
-To learn more about Next.js, take a look at the following resources:
+```text
+src/
+  store/
+    conversationStore.ts       # all tree + streaming logic (no JSX/UI imports)
+  app/
+    api/
+      chat/
+        route.ts               # server-side Gemini streaming (API key stays server-only)
+    page.tsx                   # mounts the active UI experiment
+  ui/
+    default/                   # reference UI harness
+      ChatView.tsx
+      MessageBubble.tsx
+      SiblingNav.tsx
+      Input.tsx
+    experiment-a/              # placeholder alternate UI (swap it into page.tsx)
+      ChatView.tsx
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Notes
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Persistence**: `nodes` + `activePathIds` autosave to `localStorage` (debounced). Clear site data to reset.
+- **Streaming**: the client manually consumes the server stream with `TextDecoder` and updates the assistant node’s `content` incrementally.
+- **No client API key**: calls go through `src/app/api/chat/route.ts`.
 
-## Deploy on Vercel
+## Verification
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm run lint
+npm run build
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
