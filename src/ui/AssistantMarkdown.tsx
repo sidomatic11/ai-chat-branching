@@ -6,29 +6,53 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 /**
- * Compact element overrides for UI2's tight 12.5px bubbles. We keep margins
- * small so multi-paragraph replies don't blow up the bubble's vertical rhythm.
+ * Compact element overrides for UI2's narrow message column. The spacing is
+ * sized for plain assistant text while still fitting the canvas cards.
  * Inline code is detected by the absence of a `language-*` className (fenced
  * blocks always carry one); block code is styled on the wrapping <pre>.
  */
 const compactComponents: Components = {
+  h1: ({ node: _node, children, ...rest }) => (
+    <h1
+      className="mb-2.5 mt-3 text-[16px] font-semibold leading-snug text-zinc-950"
+      {...rest}
+    >
+      {children}
+    </h1>
+  ),
+  h2: ({ node: _node, children, ...rest }) => (
+    <h2
+      className="mb-2 mt-3 text-[15px] font-semibold leading-snug text-zinc-950"
+      {...rest}
+    >
+      {children}
+    </h2>
+  ),
+  h3: ({ node: _node, children, ...rest }) => (
+    <h3
+      className="mb-1.5 mt-2.5 text-[14px] font-semibold leading-snug text-zinc-900"
+      {...rest}
+    >
+      {children}
+    </h3>
+  ),
   p: ({ node: _node, children, ...rest }) => (
-    <p className="m-0 [&:not(:last-child)]:mb-1" {...rest}>
+    <p className="m-0 [&:not(:last-child)]:mb-3" {...rest}>
       {children}
     </p>
   ),
   ul: ({ node: _node, children, ...rest }) => (
-    <ul className="my-1 list-disc pl-4" {...rest}>
+    <ul className="my-2.5 list-disc pl-4" {...rest}>
       {children}
     </ul>
   ),
   ol: ({ node: _node, children, ...rest }) => (
-    <ol className="my-1 list-decimal pl-4" {...rest}>
+    <ol className="my-2.5 list-decimal pl-4" {...rest}>
       {children}
     </ol>
   ),
   li: ({ node: _node, children, ...rest }) => (
-    <li className="my-0.5" {...rest}>
+    <li className="my-1" {...rest}>
       {children}
     </li>
   ),
@@ -43,7 +67,7 @@ const compactComponents: Components = {
     }
     return (
       <code
-        className="rounded bg-black/10 px-1 py-0.5 text-[11.5px]"
+        className="rounded bg-black/10 px-1 py-0.5 text-[12.5px]"
         {...rest}
       >
         {children}
@@ -52,7 +76,7 @@ const compactComponents: Components = {
   },
   pre: ({ node: _node, children, ...rest }) => (
     <pre
-      className="my-1 overflow-x-auto rounded bg-black/10 p-2 text-[11.5px] leading-snug"
+      className="my-3 overflow-x-auto rounded bg-black/10 p-3 text-[12.5px] leading-[1.5]"
       {...rest}
     >
       {children}
@@ -79,6 +103,9 @@ const compactComponents: Components = {
       <table {...rest}>{children}</table>
     </div>
   ),
+  hr: ({ node: _node, ...rest }) => (
+    <hr className="my-3 border-zinc-300" {...rest} />
+  ),
 };
 
 /**
@@ -86,8 +113,8 @@ const compactComponents: Components = {
  *
  * - `prose` variant relies on @tailwindcss/typography for roomy article-style
  *   layout (UI1 chat bubbles).
- * - `compact` variant ships a small components map sized for UI2's 12.5px
- *   bubbles so we don't pull in Typography's spacing in the canvas.
+ * - `compact` variant ships a small components map sized for UI2's narrow
+ *   canvas cards so we don't pull in Typography's article-scale spacing.
  *
  * GFM (tables, strikethrough, task lists, autolinks) is on for both. During
  * streaming callers can temporarily render plain text and let the final
@@ -114,8 +141,10 @@ export function AssistantMarkdown({
     );
   }
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={compactComponents}>
-      {content}
-    </ReactMarkdown>
+    <div className="text-[13.5px] leading-[1.58]">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={compactComponents}>
+        {content}
+      </ReactMarkdown>
+    </div>
   );
 }

@@ -13,7 +13,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as { messages?: ChatMessage[] };
     const messages = body.messages ?? [];
 
-    const modelName = process.env.GOOGLE_GEMINI_MODEL ?? 'gemini-2.0-flash';
+    const modelName = process.env.GOOGLE_GEMINI_MODEL ?? 'gemini-2.5-flash';
     const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
     if (!apiKey) {
       return Response.json(

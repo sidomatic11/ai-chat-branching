@@ -73,6 +73,7 @@ export const ConnectorsSvg = memo(function ConnectorsSvg({
           key={i}
           d={d}
           stroke="#f5c542"
+          strokeOpacity={0.75}
           strokeWidth={2}
           fill="none"
           strokeLinecap="round"

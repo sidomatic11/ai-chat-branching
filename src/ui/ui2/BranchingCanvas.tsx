@@ -105,6 +105,7 @@ export function BranchingCanvas() {
   const measureRef = useRef<(id: string) => number>(() => 260);
   const relayoutRef = useRef<() => void>(() => {});
   const relayoutRafRef = useRef<number | null>(null);
+  const skipRebuildForNodeCountRef = useRef<number | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const dragRef = useRef<{
     active: boolean;
@@ -112,7 +113,6 @@ export function BranchingCanvas() {
     oy: number;
   }>({ active: false, ox: 0, oy: 0 });
 
-  const [expandedPanelId, setExpandedPanelId] = useState<string | null>(null);
   const [flipLock, setFlipLock] = useState(false);
 
   const panRef = useRef<Point>(INITIAL_PAN);
@@ -152,6 +152,9 @@ export function BranchingCanvas() {
   const [{ panels, rootPanelId }, setCanvas] = useState(() =>
     rebuildCanvasFromGraph(useConversationStore.getState().nodes),
   );
+  const [expandedPanelId, setExpandedPanelId] = useState<string | null>(
+    () => rootPanelId,
+  );
 
   const panelsRef = useRef(panels);
   const rootPanelIdRef = useRef(rootPanelId);
@@ -181,6 +184,14 @@ export function BranchingCanvas() {
     }
 
     if (prev === nodeCount) return;
+
+    const skipRebuildForNodeCount = skipRebuildForNodeCountRef.current;
+    if (skipRebuildForNodeCount === nodeCount && nodeCount > prev) {
+      skipRebuildForNodeCountRef.current = null;
+      prevNodeCountRef.current = nodeCount;
+      return;
+    }
+    skipRebuildForNodeCountRef.current = null;
 
     const canvas = rebuildCanvasFromGraph(nodes);
     prevNodeCountRef.current = nodeCount;
@@ -695,7 +706,31 @@ export function BranchingCanvas() {
       if (!trimmed || isStreaming) return;
 
       if (!panel.headUserId) {
-        const r = await sendMessage(trimmed, { parentId: panel.attachParentId });
+        skipRebuildForNodeCountRef.current =
+          Object.keys(useConversationStore.getState().nodes).length + 2;
+
+        const sendPromise = sendMessage(trimmed, { parentId: panel.attachParentId });
+        const optimistic = useConversationStore.getState();
+        const optimisticAssistantId = optimistic.activePathIds.at(-1);
+        const optimisticUserId = optimistic.activePathIds.at(-2);
+        if (
+          optimisticAssistantId &&
+          optimisticUserId &&
+          optimistic.nodes[optimisticAssistantId]?.role === 'assistant' &&
+          optimistic.nodes[optimisticUserId]?.role === 'user'
+        ) {
+          updateLivePanel(panel.id, {
+            headUserId: optimisticUserId,
+            tailLeafId: optimisticAssistantId,
+          });
+        }
+        if (
+          Object.keys(optimistic.nodes).length !== skipRebuildForNodeCountRef.current
+        ) {
+          skipRebuildForNodeCountRef.current = null;
+        }
+
+        const r = await sendPromise;
         if (r) {
           updateLivePanel(panel.id, {
             headUserId: r.userId,
@@ -710,6 +745,9 @@ export function BranchingCanvas() {
       const headNode = storeNodes[panel.headUserId];
       const isPlaceholder =
         headNode?.role === 'user' && headNode.content.trim() === '';
+      const placeholderAssistantId = isPlaceholder
+        ? latestAssistantId(storeNodes, panel.headUserId)
+        : null;
 
       let tail =
         panel.tailLeafId ??
@@ -720,10 +758,38 @@ export function BranchingCanvas() {
         if (a) tail = a;
       }
 
-      const r = await sendMessage(trimmed, {
+      const expectedNodeCountDelta = isPlaceholder
+        ? placeholderAssistantId
+          ? 0
+          : 1
+        : 2;
+      if (expectedNodeCountDelta > 0) {
+        skipRebuildForNodeCountRef.current =
+          Object.keys(storeNodes).length + expectedNodeCountDelta;
+      }
+
+      const sendPromise = sendMessage(trimmed, {
         parentId: tail,
         existingUserId: isPlaceholder ? panel.headUserId : undefined,
       });
+      const optimistic = useConversationStore.getState();
+      const optimisticAssistantId = optimistic.activePathIds.at(-1);
+      if (
+        optimisticAssistantId &&
+        optimistic.nodes[optimisticAssistantId]?.role === 'assistant'
+      ) {
+        updateLivePanel(panel.id, {
+          tailLeafId: optimisticAssistantId,
+        });
+      }
+      if (
+        skipRebuildForNodeCountRef.current !== null &&
+        Object.keys(optimistic.nodes).length !== skipRebuildForNodeCountRef.current
+      ) {
+        skipRebuildForNodeCountRef.current = null;
+      }
+
+      const r = await sendPromise;
 
       if (r) {
         updateLivePanel(panel.id, {
@@ -1035,10 +1101,10 @@ export function BranchingCanvas() {
           {linearFooterComposerPanel ? (
             <div className="shrink-0 border-t border-zinc-200 bg-white px-3 pb-3 pt-2">
               <div className="mx-auto px-2 py-2" style={{ width: NODE_WIDTH }}>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-2">
                   <input
                     ref={linearComposerInputRef}
-                    className="min-w-0 flex-1 rounded-lg border border-sky-500 bg-white px-2.5 py-1.5 text-[12.5px] text-zinc-900 outline-none placeholder:text-zinc-400"
+                    className="h-10 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3.5 text-[13.5px] text-slate-900 outline-none placeholder:text-slate-400 focus-visible:border-slate-500 focus-visible:ring-2 focus-visible:ring-slate-400/35"
                     placeholder="Message…"
                     value={linearDraft}
                     disabled={isStreaming}
@@ -1058,7 +1124,7 @@ export function BranchingCanvas() {
                   <button
                     type="button"
                     disabled={isStreaming || linearDraft.trim().length === 0}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-500 text-white disabled:cursor-not-allowed disabled:opacity-35"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-700 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-35"
                     onMouseDown={e => e.stopPropagation()}
                     onClick={() => {
                       void (async () => {
@@ -1068,7 +1134,7 @@ export function BranchingCanvas() {
                       })();
                     }}
                   >
-                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden>
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
                       <path
                         d="M1 7h12M7 1l6 6-6 6"
                         stroke="currentColor"
@@ -1113,7 +1179,7 @@ function ExpandNodeButton({
       className={[
         '-mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition hover:bg-zinc-200/80',
         revealOnParentHover
-          ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400'
+          ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400'
           : '',
       ].join(' ')}
       aria-expanded={isExpandedFocus}
@@ -1209,7 +1275,7 @@ function LinearBranchNavRow({
   onExpandToggle: () => void;
 }) {
   return (
-    <div className="group flex shrink-0 items-center justify-between gap-2 bg-white px-3 py-2 text-[11.5px] text-zinc-600">
+    <div className="group flex shrink-0 items-center justify-between gap-2 bg-white px-3 py-2.5 text-[12px] text-zinc-600">
       <div className="flex min-w-0 flex-1 items-center justify-center gap-2">
         <button
           type="button"
@@ -1272,7 +1338,7 @@ function LinearUserBubble({
         {editing ? (
           <div
             data-ui2-no-composer-refocus
-            className="w-full rounded-xl rounded-br-[3px] bg-sky-500 px-2.5 py-2 text-left text-[12.5px] leading-snug text-white"
+            className="w-full rounded-2xl rounded-br-[4px] bg-slate-200 px-3 py-2.5 text-left text-[13.5px] leading-[1.48] text-slate-900"
             onMouseDown={e => e.stopPropagation()}
           >
             <textarea
@@ -1280,13 +1346,13 @@ function LinearUserBubble({
               onChange={e => setDraft(e.target.value)}
               rows={3}
               disabled={isStreaming}
-              className="w-full min-h-[4.5rem] resize-y rounded-lg border border-white/30 bg-white/15 px-2 py-1.5 text-[12.5px] text-white outline-none placeholder:text-white/50"
+              className="w-full min-h-[5rem] resize-y rounded-lg border border-slate-400/60 bg-white px-2.5 py-2 text-[13.5px] text-slate-900 outline-none placeholder:text-slate-400"
             />
             <div className="mt-1.5 flex justify-end gap-1.5">
               <button
                 type="button"
                 disabled={isStreaming}
-                className="rounded-md px-2 py-1 text-xs font-medium text-white/85 hover:bg-white/10"
+                className="rounded-md px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-300/60"
                 onMouseDown={e => e.stopPropagation()}
                 onClick={e => {
                   e.stopPropagation();
@@ -1299,7 +1365,7 @@ function LinearUserBubble({
               <button
                 type="button"
                 disabled={isStreaming || draft.trim().length === 0}
-                className="rounded-md bg-white px-2.5 py-1 text-xs font-medium text-sky-600 hover:bg-zinc-50 disabled:opacity-40"
+                className="rounded-md bg-slate-800 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-40"
                 onMouseDown={e => e.stopPropagation()}
                 onClick={e => {
                   e.stopPropagation();
@@ -1316,7 +1382,7 @@ function LinearUserBubble({
           </div>
         ) : (
           <>
-            <div className="min-w-0 flex-1 rounded-xl rounded-br-[3px] bg-sky-500 px-2.5 py-2 text-[12.5px] leading-snug text-white">
+            <div className="min-w-0 flex-1 rounded-2xl rounded-br-[4px] bg-slate-200 px-3 py-2.5 text-[13.5px] leading-[1.48] text-slate-900">
               {content.trim().length === 0 ? (
                 <span className="opacity-50">(empty)</span>
               ) : (
@@ -1328,7 +1394,7 @@ function LinearUserBubble({
               data-ui2-no-composer-refocus
               aria-label="Edit message"
               disabled={isStreaming}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-400 opacity-0 transition hover:bg-zinc-100 hover:text-zinc-600 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:pointer-events-none disabled:opacity-0"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-400 opacity-0 transition hover:bg-zinc-100 hover:text-zinc-600 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:pointer-events-none disabled:opacity-0"
               onMouseDown={e => e.stopPropagation()}
               onClick={e => {
                 e.stopPropagation();
@@ -1415,7 +1481,7 @@ function FrozenPanel({
       onMouseDown={e => e.stopPropagation()}
     >
       {!isLinear ? (
-        <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] font-semibold tracking-wide text-zinc-600">
+        <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2.5 text-[12px] font-semibold tracking-wide text-zinc-600">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-300" />
             <span className="truncate">{headerLabel(panel, true)}</span>
@@ -1429,9 +1495,9 @@ function FrozenPanel({
           onExpandToggle={onExpandToggle}
         />
       ) : null}
-      <div className="flex flex-col gap-1.5 px-2 py-2.5">
+      <div className="flex flex-col gap-4 px-3.5 py-3.5">
         {flat.length === 0 ? (
-          <p className="px-2 py-6 text-center text-[12px] text-zinc-400">(empty)</p>
+          <p className="px-2 py-7 text-center text-[13px] text-zinc-400">(empty)</p>
         ) : (
           flat.map(msg =>
             msg.role === 'user' && isLinear ? (
@@ -1444,14 +1510,14 @@ function FrozenPanel({
             ) : (
               <div
                 key={msg.nodeId}
-                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                className={`flex ${msg.role === 'user' ? 'justify-end' : 'w-full justify-start'}`}
               >
                 <div
                   className={[
-                    'max-w-[78%] rounded-xl px-2.5 py-2 text-[12.5px] leading-snug',
+                    'text-[13.5px] leading-[1.5]',
                     msg.role === 'user'
-                      ? 'rounded-br-[3px] bg-sky-500 text-white'
-                      : 'rounded-bl-[3px] bg-zinc-200 text-zinc-900',
+                      ? 'max-w-[78%] rounded-2xl rounded-br-[4px] bg-slate-200 px-3 py-2.5 leading-[1.48] text-slate-900'
+                      : 'w-full bg-white px-0.5 py-1.5 text-zinc-900',
                   ].join(' ')}
                 >
                   {msg.content ? (
@@ -1568,7 +1634,7 @@ function LivePanel({
           />
         ) : null
       ) : (
-        <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] font-semibold tracking-wide text-zinc-600">
+        <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2.5 text-[12px] font-semibold tracking-wide text-zinc-600">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
             <span className="truncate">{headerLabel(panel, false)}</span>
@@ -1577,13 +1643,13 @@ function LivePanel({
         </div>
       )}
 
-      <div className="flex flex-col gap-1.5 px-2 py-2.5">
+      <div className="flex flex-col gap-4 px-3.5 py-3.5">
         {!panel.headUserId ? (
-          <p className="px-2 py-6 text-center text-[12px] text-zinc-400">
+          <p className="px-2 py-7 text-center text-[13px] text-zinc-400">
             Type below to start this thread.
           </p>
         ) : flat.length === 0 ? (
-          <p className="px-2 py-6 text-center text-[12px] text-zinc-400">
+          <p className="px-2 py-7 text-center text-[13px] text-zinc-400">
             (empty)
           </p>
         ) : (
@@ -1613,7 +1679,9 @@ function LivePanel({
             return (
               <div
                 key={`${msg.nodeId}-${i}`}
-                className={isUser ? 'flex justify-end' : 'flex justify-start'}
+                className={
+                  isUser ? 'flex justify-end' : 'flex w-full justify-start'
+                }
               >
                 <button
                   type="button"
@@ -1626,10 +1694,10 @@ function LivePanel({
                       : undefined
                   }
                   className={[
-                    'max-w-[78%] rounded-xl px-2.5 py-2 text-left text-[12.5px] leading-snug transition',
+                    'text-left text-[13.5px] leading-[1.5] transition',
                     isUser
-                      ? `rounded-br-[3px] bg-sky-500 text-white ${canBranch ? `cursor-pointer ${hoverRing}` : ''}`
-                      : 'cursor-default rounded-bl-[3px] bg-zinc-200 text-zinc-900',
+                      ? `max-w-[78%] rounded-2xl rounded-br-[4px] bg-slate-200 px-3 py-2.5 leading-[1.48] text-slate-900 ${canBranch ? `cursor-pointer ${hoverRing}` : ''}`
+                      : 'w-full cursor-default bg-white px-0.5 py-1.5 text-zinc-900',
                     !canBranch && isUser ? 'cursor-default' : '',
                   ].join(' ')}
                   onMouseDown={e => {
@@ -1670,9 +1738,9 @@ function LivePanel({
 
       {showInlineInput ? (
         <div className="shrink-0 border-t border-zinc-200 bg-white px-2 py-2">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <input
-              className="min-w-0 flex-1 rounded-lg border border-sky-500 bg-white px-2.5 py-1.5 text-[12.5px] text-zinc-900 outline-none placeholder:text-zinc-400"
+              className="h-10 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3.5 text-[13.5px] text-slate-900 outline-none placeholder:text-slate-400 focus-visible:border-slate-500 focus-visible:ring-2 focus-visible:ring-slate-400/35"
               placeholder="Message…"
               value={draft}
               disabled={isStreaming}
@@ -1691,7 +1759,7 @@ function LivePanel({
             <button
               type="button"
               disabled={isStreaming || draft.trim().length === 0}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-500 text-white disabled:cursor-not-allowed disabled:opacity-35"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-700 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-35"
               onMouseDown={e => e.stopPropagation()}
               onClick={() => {
                 void (async () => {
@@ -1700,7 +1768,7 @@ function LivePanel({
                 })();
               }}
             >
-              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
                 <path
                   d="M1 7h12M7 1l6 6-6 6"
                   stroke="currentColor"

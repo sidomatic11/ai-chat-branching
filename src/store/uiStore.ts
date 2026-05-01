@@ -10,8 +10,8 @@ export type UiStore = {
   resetUi: () => void;
 };
 
-export const UI_STORAGE_KEY = 'branching-chat-prototype:ui:v1';
-const DEFAULT_UI: UiId = 'ui1';
+export const UI_STORAGE_KEY = 'branching-chat-prototype:ui:v2';
+const DEFAULT_UI: UiId = 'ui2';
 
 function readPersistedUi(): UiId | null {
   if (typeof window === 'undefined') return null;

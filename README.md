@@ -18,10 +18,10 @@ Create `.env.local`:
 
 ```bash
 GOOGLE_GENERATIVE_AI_API_KEY=...
-GOOGLE_GEMINI_MODEL=gemini-2.0-flash
+GOOGLE_GEMINI_MODEL=gemini-2.5-flash
 ```
 
-`GOOGLE_GEMINI_MODEL` is optional (defaults to `gemini-2.0-flash`).
+`GOOGLE_GEMINI_MODEL` is optional (defaults to `gemini-2.5-flash`).
 
 ### 3) Run the dev server
 
