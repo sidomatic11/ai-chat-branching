@@ -20,6 +20,12 @@ export type MessageNode = {
 };
 
 type ApiMessage = { role: Role; content: string };
+type StoreSet = (
+  partial:
+    | Partial<ConversationStore>
+    | ConversationStore
+    | ((state: ConversationStore) => Partial<ConversationStore> | ConversationStore),
+) => void;
 
 export type SendMessageOptions = {
   /**
@@ -75,6 +81,7 @@ export type ConversationStore = {
 
 const STORAGE_KEY = 'branching-chat-prototype:v1';
 export const ROOT_ID = 'root';
+const STREAM_FLUSH_MS = 32;
 
 function createRootNode(): MessageNode {
   return {
@@ -213,6 +220,57 @@ function addNode(nodes: Record<string, MessageNode>, node: MessageNode) {
     const parent = nodes[node.parentId];
     if (parent) parent.childIds = [...parent.childIds, node.id];
   }
+}
+
+function appendAssistantContent(
+  set: StoreSet,
+  assistantId: string,
+  delta: string,
+) {
+  if (!delta) return;
+  set(state => {
+    const assistant = state.nodes[assistantId];
+    if (!assistant || assistant.role !== 'assistant') return state;
+    return {
+      nodes: {
+        ...state.nodes,
+        [assistantId]: {
+          ...assistant,
+          content: assistant.content + delta,
+        },
+      },
+    };
+  });
+}
+
+function createAssistantStreamBuffer(set: StoreSet, assistantId: string) {
+  let pending = '';
+  let timer: number | null = null;
+
+  const flush = () => {
+    timer = null;
+    const delta = pending;
+    pending = '';
+    appendAssistantContent(set, assistantId, delta);
+  };
+
+  return {
+    push(delta: string) {
+      pending += delta;
+      if (typeof window === 'undefined') {
+        flush();
+        return;
+      }
+      if (timer !== null) return;
+      timer = window.setTimeout(flush, STREAM_FLUSH_MS);
+    },
+    flush() {
+      if (typeof window !== 'undefined' && timer !== null) {
+        window.clearTimeout(timer);
+      }
+      flush();
+    },
+  };
 }
 
 async function streamAssistantText({
@@ -503,22 +561,16 @@ export const useConversationStore = create<ConversationStore>()(
       const { nodes } = get();
       const pathToUser = getPathToRoot(nodes, userId);
       const messages = getMessagesForApi(nodes, pathToUser);
+      const streamBuffer = createAssistantStreamBuffer(set, assistantId);
 
-      await streamAssistantText({
-        messages,
-        onTextDelta: delta => {
-          set(state => ({
-            nodes: {
-              ...state.nodes,
-              [assistantId]: {
-                ...state.nodes[assistantId],
-                content: (state.nodes[assistantId]?.content ?? '') + delta,
-              },
-            },
-          }));
-        },
-      });
-
+      try {
+        await streamAssistantText({
+          messages,
+          onTextDelta: streamBuffer.push,
+        });
+      } finally {
+        streamBuffer.flush();
+      }
       set({ isStreaming: false });
       return { userId, assistantId };
     } catch (e) {
@@ -575,22 +627,16 @@ export const useConversationStore = create<ConversationStore>()(
       const { nodes } = get();
       const pathToUser = getPathToRoot(nodes, userId);
       const messages = getMessagesForApi(nodes, pathToUser);
+      const streamBuffer = createAssistantStreamBuffer(set, assistantId);
 
-      await streamAssistantText({
-        messages,
-        onTextDelta: delta => {
-          set(state => ({
-            nodes: {
-              ...state.nodes,
-              [assistantId]: {
-                ...state.nodes[assistantId],
-                content: (state.nodes[assistantId]?.content ?? '') + delta,
-              },
-            },
-          }));
-        },
-      });
-
+      try {
+        await streamAssistantText({
+          messages,
+          onTextDelta: streamBuffer.push,
+        });
+      } finally {
+        streamBuffer.flush();
+      }
       set({ isStreaming: false });
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown error';
@@ -637,22 +683,16 @@ export const useConversationStore = create<ConversationStore>()(
       const { nodes } = get();
       const pathToUser = getPathToRoot(nodes, parentUserId);
       const messages = getMessagesForApi(nodes, pathToUser);
+      const streamBuffer = createAssistantStreamBuffer(set, assistantId);
 
-      await streamAssistantText({
-        messages,
-        onTextDelta: delta => {
-          set(state => ({
-            nodes: {
-              ...state.nodes,
-              [assistantId]: {
-                ...state.nodes[assistantId],
-                content: (state.nodes[assistantId]?.content ?? '') + delta,
-              },
-            },
-          }));
-        },
-      });
-
+      try {
+        await streamAssistantText({
+          messages,
+          onTextDelta: streamBuffer.push,
+        });
+      } finally {
+        streamBuffer.flush();
+      }
       set({ isStreaming: false });
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown error';

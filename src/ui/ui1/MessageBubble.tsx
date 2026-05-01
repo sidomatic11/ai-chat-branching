@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useConversationStore } from '@/store/conversationStore';
+import { AssistantMarkdown } from '@/ui/AssistantMarkdown';
 import { SiblingNav } from './SiblingNav';
 import { UserBranchNav } from './UserBranchNav';
 
@@ -68,9 +69,13 @@ export function MessageBubble({ nodeId }: { nodeId: string }) {
                 </div>
               </div>
             ) : (
-              <div className="mt-2 whitespace-pre-wrap break-words text-sm leading-6">
+              <div className="mt-2 break-words text-sm leading-6">
                 {node.content.length > 0 ? (
-                  node.content
+                  isAssistant ? (
+                    <AssistantMarkdown content={node.content} variant="prose" />
+                  ) : (
+                    <span className="whitespace-pre-wrap">{node.content}</span>
+                  )
                 ) : isAssistant && isStreaming ? (
                   <span className="opacity-70">…</span>
                 ) : (

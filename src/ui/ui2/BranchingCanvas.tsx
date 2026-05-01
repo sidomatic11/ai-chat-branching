@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { ROOT_ID, useConversationStore } from '@/store/conversationStore';
+import { AssistantMarkdown } from '@/ui/AssistantMarkdown';
 import { getExpandedLinearChainIds } from '@/ui/ui2/canvasChain';
 import { ConnectorsSvg } from '@/ui/ui2/ConnectorsSvg';
 import { DEFAULT_FLIP_OPTS, runFlipToNatural } from '@/ui/ui2/modeTransitionFlip';
@@ -34,6 +35,9 @@ import {
 } from '@/ui/ui2/viewportSync';
 
 type PanelLayoutMode = 'canvas' | 'linear';
+type Point = { x: number; y: number };
+const INITIAL_PAN: Point = { x: 50, y: 80 };
+const INITIAL_ZOOM = 1;
 
 /** Set false to disable FLIP and restore instant mode switches. */
 const ENABLE_MODE_FLIP = false;
@@ -89,6 +93,9 @@ export function BranchingCanvas() {
 
   const panelEls = useRef<Map<string, HTMLDivElement>>(new Map());
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const worldRef = useRef<HTMLDivElement | null>(null);
+  const gridPatternRef = useRef<SVGPatternElement | null>(null);
+  const zoomBadgeRef = useRef<HTMLDivElement | null>(null);
   const linearScrollRef = useRef<HTMLDivElement | null>(null);
   const expandedModeRef = useRef(false);
   const pendingExpandRef = useRef<PendingExpandFlip | null>(null);
@@ -96,27 +103,51 @@ export function BranchingCanvas() {
   const pendingCollapseAnchorRef = useRef<CollapseViewportAnchor | null>(null);
   const flipWrapRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const measureRef = useRef<(id: string) => number>(() => 260);
-
-  const [expandedPanelId, setExpandedPanelId] = useState<string | null>(null);
-  const [flipLock, setFlipLock] = useState(false);
-
-  const [pan, setPan] = useState({ x: 50, y: 80 });
-  const [zoom, setZoom] = useState(1);
-  const panRef = useRef(pan);
-  const zoomRef = useRef(zoom);
-  const [drag, setDrag] = useState<{
+  const relayoutRef = useRef<() => void>(() => {});
+  const relayoutRafRef = useRef<number | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const dragRef = useRef<{
     active: boolean;
     ox: number;
     oy: number;
   }>({ active: false, ox: 0, oy: 0 });
 
-  useEffect(() => {
-    panRef.current = pan;
-  }, [pan]);
+  const [expandedPanelId, setExpandedPanelId] = useState<string | null>(null);
+  const [flipLock, setFlipLock] = useState(false);
 
-  useEffect(() => {
-    zoomRef.current = zoom;
-  }, [zoom]);
+  const panRef = useRef<Point>(INITIAL_PAN);
+  const zoomRef = useRef(INITIAL_ZOOM);
+
+  const updateViewportTransform = useCallback((nextPan: Point, nextZoom: number) => {
+    panRef.current = nextPan;
+    zoomRef.current = nextZoom;
+
+    const world = worldRef.current;
+    if (world) {
+      world.style.transform = `translate(${nextPan.x}px, ${nextPan.y}px) scale(${nextZoom})`;
+    }
+
+    const patternSize = GRID_SIZE * nextZoom;
+    const gridPattern = gridPatternRef.current;
+    if (gridPattern) {
+      gridPattern.setAttribute('x', String(nextPan.x % patternSize));
+      gridPattern.setAttribute('y', String(nextPan.y % patternSize));
+      gridPattern.setAttribute('width', String(patternSize));
+      gridPattern.setAttribute('height', String(patternSize));
+    }
+
+    if (zoomBadgeRef.current) {
+      zoomBadgeRef.current.textContent = `${Math.round(nextZoom * 100)}%`;
+    }
+  }, []);
+
+  const setWorldEl = useCallback(
+    (el: HTMLDivElement | null) => {
+      worldRef.current = el;
+      if (el) updateViewportTransform(panRef.current, zoomRef.current);
+    },
+    [updateViewportTransform],
+  );
 
   const [{ panels, rootPanelId }, setCanvas] = useState(() =>
     rebuildCanvasFromGraph(useConversationStore.getState().nodes),
@@ -144,7 +175,7 @@ export function BranchingCanvas() {
       prevNodeCountRef.current = nodeCount;
       // Empty / fresh conversation: start in linear (use existing seed canvas ids).
       if (nodeCount === 1 && rootPanelId && panels[rootPanelId]) {
-        setExpandedPanelId(rootPanelId);
+        queueMicrotask(() => setExpandedPanelId(rootPanelId));
       }
       return;
     }
@@ -157,11 +188,13 @@ export function BranchingCanvas() {
     setPositions({});
     // Clear chat (or any jump back to lone root): open linear on the root panel.
     if (nodeCount === 1) {
-      setExpandedPanelId(canvas.rootPanelId);
+      queueMicrotask(() => setExpandedPanelId(canvas.rootPanelId));
     }
   }, [nodeCount, nodes, rootPanelId, panels]);
 
-  expandedModeRef.current = expandedPanelId != null;
+  useEffect(() => {
+    expandedModeRef.current = expandedPanelId != null;
+  }, [expandedPanelId]);
 
   const expandedChainIds = useMemo(() => {
     if (!expandedPanelId || !panels[expandedPanelId]) return [];
@@ -180,16 +213,16 @@ export function BranchingCanvas() {
     const leaf =
       useConversationStore.getState().activePathIds.at(-1) ?? null;
     if (!leaf) {
-      setExpandedPanelId(null);
+      queueMicrotask(() => setExpandedPanelId(null));
       return;
     }
     // After clear, active leaf is ROOT — map to the empty live root panel.
     if (leaf === ROOT_ID && nodeCount === 1 && rootPanelId && panels[rootPanelId]) {
-      setExpandedPanelId(rootPanelId);
+      queueMicrotask(() => setExpandedPanelId(rootPanelId));
       return;
     }
     const nextId = findLivePanelIdForGraphLeaf(panels, nodes, leaf);
-    setExpandedPanelId(nextId);
+    queueMicrotask(() => setExpandedPanelId(nextId));
   }, [expandedPanelId, panels, nodes, nodeCount, rootPanelId]);
 
   const measure = useCallback((panelId: string) => {
@@ -227,8 +260,6 @@ export function BranchingCanvas() {
     if (!wp) return;
 
     const z = 1;
-    zoomRef.current = z;
-    setZoom(z);
     const panNext = panToPlaceWorldOnScreen(
       pv,
       anchor.focalClientX,
@@ -237,9 +268,8 @@ export function BranchingCanvas() {
       wp.wy,
       z,
     );
-    panRef.current = panNext;
-    setPan(panNext);
-  }, []);
+    updateViewportTransform(panNext, z);
+  }, [updateViewportTransform]);
 
   const captureCollapseAnchor = useCallback(() => {
     const ex = expandedPanelId;
@@ -312,7 +342,9 @@ export function BranchingCanvas() {
   );
 
   const handleExpandToggleRef = useRef(handleExpandToggle);
-  handleExpandToggleRef.current = handleExpandToggle;
+  useEffect(() => {
+    handleExpandToggleRef.current = handleExpandToggle;
+  }, [handleExpandToggle]);
 
   const panelBase = useMemo(() => {
     const out: Record<string, { id: string; canvasChildIds: string[] }> = {};
@@ -336,29 +368,36 @@ export function BranchingCanvas() {
   }, [expandedPanelId, rootPanelId, panelBase, measure, panels]);
 
   useLayoutEffect(() => {
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => {
-        relayout();
+    relayoutRef.current = relayout;
+  }, [relayout]);
+
+  const scheduleRelayout = useCallback(() => {
+    if (relayoutRafRef.current !== null) return;
+    relayoutRafRef.current = requestAnimationFrame(() => {
+      relayoutRafRef.current = requestAnimationFrame(() => {
+        relayoutRafRef.current = null;
+        relayoutRef.current();
       });
     });
-    return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-    };
-  }, [relayout, nodes, panels, zoom, pan]);
+  }, []);
 
-  const applyTransform = useCallback(() => {
-    return `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
-  }, [pan.x, pan.y, zoom]);
+  useLayoutEffect(() => {
+    scheduleRelayout();
+    return () => {
+      if (relayoutRafRef.current !== null) {
+        cancelAnimationFrame(relayoutRafRef.current);
+        relayoutRafRef.current = null;
+      }
+    };
+  }, [scheduleRelayout, panelBase, rootPanelId, expandedPanelId]);
 
   const onWheel = useCallback((e: WheelEvent) => {
     if (expandedModeRef.current) {
-      // Pinch-zoom-out on trackpad (ctrl/cmd + wheel) exits linear mode.
+      // Trackpad pinch is ctrl/cmd + wheel. Zoom-out exits linear; zoom-in must not zoom the page.
       const wantsZoom = e.ctrlKey || e.metaKey;
-      if (wantsZoom && e.deltaY > 0) {
+      if (wantsZoom) {
         e.preventDefault();
-        collapseExpanded();
+        if (e.deltaY > 0) collapseExpanded();
       }
       return;
     }
@@ -390,10 +429,7 @@ export function BranchingCanvas() {
         y: my - wy * newZ,
       };
 
-      zoomRef.current = newZ;
-      panRef.current = newP;
-      setZoom(newZ);
-      setPan(newP);
+      updateViewportTransform(newP, newZ);
 
       const zoomingIn = newZ > prevZ;
       const crossIntoLinear =
@@ -409,15 +445,15 @@ export function BranchingCanvas() {
       return;
     }
 
-    setPan(p => {
-      const next = {
-        x: p.x - e.deltaX,
-        y: p.y - e.deltaY,
-      };
-      panRef.current = next;
-      return next;
-    });
-  }, [collapseExpanded]);
+    const prevP = panRef.current;
+    updateViewportTransform(
+      {
+        x: prevP.x - e.deltaX,
+        y: prevP.y - e.deltaY,
+      },
+      zoomRef.current,
+    );
+  }, [collapseExpanded, updateViewportTransform]);
 
   useEffect(() => {
     const el = viewportRef.current;
@@ -445,6 +481,10 @@ export function BranchingCanvas() {
         const scale = (e as unknown as { scale?: number }).scale ?? 1;
         if (pinchTrack.active) {
           pinchTrack.minScale = Math.min(pinchTrack.minScale, scale);
+        }
+        // Pinch-open (scale > 1) would page-zoom; pinch-closed path still runs for collapse on gestureend.
+        if (scale > 1.02) {
+          e.preventDefault();
         }
         return;
       }
@@ -477,13 +517,15 @@ export function BranchingCanvas() {
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
+      const drag = dragRef.current;
       if (!drag.active) return;
-      const next = { x: e.clientX - drag.ox, y: e.clientY - drag.oy };
-      panRef.current = next;
-      setPan(next);
+      updateViewportTransform(
+        { x: e.clientX - drag.ox, y: e.clientY - drag.oy },
+        zoomRef.current,
+      );
     };
     const onUp = () => {
-      setDrag(d => ({ ...d, active: false }));
+      dragRef.current.active = false;
       if (viewportRef.current) {
         viewportRef.current.style.cursor = expandedModeRef.current ? 'default' : 'grab';
       }
@@ -494,21 +536,44 @@ export function BranchingCanvas() {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [drag.active, drag.ox, drag.oy]);
+  }, [updateViewportTransform]);
 
   const onCanvasMouseDown = useCallback((e: React.MouseEvent) => {
     if (expandedModeRef.current) return;
     const t = e.target as HTMLElement | null;
     if (t?.closest?.('[data-panel-node]')) return;
     const p = panRef.current;
-    setDrag({ active: true, ox: e.clientX - p.x, oy: e.clientY - p.y });
+    dragRef.current = { active: true, ox: e.clientX - p.x, oy: e.clientY - p.y };
     if (viewportRef.current) viewportRef.current.style.cursor = 'grabbing';
   }, []);
 
-  const setPanelEl = useCallback((panelId: string, el: HTMLDivElement | null) => {
-    if (el) panelEls.current.set(panelId, el);
-    else panelEls.current.delete(panelId);
-  }, []);
+  const setPanelEl = useCallback(
+    (panelId: string, el: HTMLDivElement | null) => {
+      const prev = panelEls.current.get(panelId);
+      if (prev) resizeObserverRef.current?.unobserve(prev);
+
+      if (el) {
+        panelEls.current.set(panelId, el);
+        resizeObserverRef.current?.observe(el);
+      } else {
+        panelEls.current.delete(panelId);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (!expandedModeRef.current) scheduleRelayout();
+    });
+    resizeObserverRef.current = observer;
+    for (const el of panelEls.current.values()) observer.observe(el);
+    return () => {
+      observer.disconnect();
+      resizeObserverRef.current = null;
+    };
+  }, [scheduleRelayout]);
 
   const updateLivePanel = useCallback(
     (panelId: string, patch: Partial<LivePanelState>) => {
@@ -540,7 +605,8 @@ export function BranchingCanvas() {
       if (flatIndex === 0 && panel.canvasParentId) {
         const head = panel.headUserId;
         if (!head) return;
-        const parentGraphId = nodes[head]?.parentId ?? ROOT_ID;
+        const parentGraphId =
+          useConversationStore.getState().nodes[head]?.parentId ?? ROOT_ID;
         const created = createParallelChildThread(parentGraphId);
         if (!created) return;
 
@@ -620,13 +686,7 @@ export function BranchingCanvas() {
         });
       }
     },
-    [
-      panels,
-      isStreaming,
-      nodes,
-      createParallelChildThread,
-      branchFromUserMessage,
-    ],
+    [panels, isStreaming, createParallelChildThread, branchFromUserMessage],
   );
 
   const handleSend = useCallback(
@@ -646,11 +706,11 @@ export function BranchingCanvas() {
         return;
       }
 
-      const headNode = nodes[panel.headUserId];
+      const storeNodes = useConversationStore.getState().nodes;
+      const headNode = storeNodes[panel.headUserId];
       const isPlaceholder =
         headNode?.role === 'user' && headNode.content.trim() === '';
 
-      const storeNodes = useConversationStore.getState().nodes;
       let tail =
         panel.tailLeafId ??
         computeLatestLeafFromUserHead(storeNodes, panel.headUserId);
@@ -672,12 +732,8 @@ export function BranchingCanvas() {
         setActivePath(r.assistantId);
       }
     },
-    [isStreaming, sendMessage, setActivePath, updateLivePanel, nodes],
+    [isStreaming, sendMessage, setActivePath, updateLivePanel],
   );
-
-  const patternX = pan.x % (GRID_SIZE * zoom);
-  const patternY = pan.y % (GRID_SIZE * zoom);
-  const patternSize = GRID_SIZE * zoom;
 
   const isExpanded = expandedPanelId != null;
 
@@ -693,7 +749,7 @@ export function BranchingCanvas() {
 
   const [linearDraft, setLinearDraft] = useState('');
   useEffect(() => {
-    setLinearDraft('');
+    queueMicrotask(() => setLinearDraft(''));
   }, [expandedPanelId, linearFooterComposerPanel?.id]);
 
   const linearComposerInputRef = useRef<HTMLInputElement>(null);
@@ -709,7 +765,7 @@ export function BranchingCanvas() {
   useLayoutEffect(() => {
     if (!isExpanded || !linearFooterComposerPanel || flipLock) return;
     focusLinearComposer();
-  }, [isExpanded, linearFooterComposerPanel?.id, flipLock, isStreaming, focusLinearComposer]);
+  }, [isExpanded, linearFooterComposerPanel, flipLock, isStreaming, focusLinearComposer]);
 
   const graphPanels = useMemo(() => {
     const list = Object.values(panels);
@@ -819,11 +875,12 @@ export function BranchingCanvas() {
         <svg className="pointer-events-none absolute inset-0 h-full w-full">
           <defs>
             <pattern
+              ref={gridPatternRef}
               id="ui2-dot-grid"
-              x={patternX}
-              y={patternY}
-              width={patternSize}
-              height={patternSize}
+              x={INITIAL_PAN.x % (GRID_SIZE * INITIAL_ZOOM)}
+              y={INITIAL_PAN.y % (GRID_SIZE * INITIAL_ZOOM)}
+              width={GRID_SIZE * INITIAL_ZOOM}
+              height={GRID_SIZE * INITIAL_ZOOM}
               patternUnits="userSpaceOnUse"
             >
               <circle cx="1.2" cy="1.2" r="1" fill="rgba(255,255,255,0.12)" />
@@ -833,9 +890,10 @@ export function BranchingCanvas() {
         </svg>
 
         <div
+          ref={setWorldEl}
           className="absolute left-0 top-0 origin-top-left"
           style={{
-            transform: applyTransform(),
+            transform: `translate(${INITIAL_PAN.x}px, ${INITIAL_PAN.y}px) scale(${INITIAL_ZOOM})`,
             transition: 'none',
           }}
         >
@@ -874,10 +932,11 @@ export function BranchingCanvas() {
                 isExpandedFocus={false}
                 onExpandToggle={() => handleExpandToggle(p.id)}
                 onFocusPanel={() => {
+                  const storeNodes = useConversationStore.getState().nodes;
                   const tail =
                     p.tailLeafId ??
                     (p.headUserId
-                      ? computeLatestLeafFromUserHead(nodes, p.headUserId)
+                      ? computeLatestLeafFromUserHead(storeNodes, p.headUserId)
                       : null);
                   if (tail) setActivePath(tail);
                 }}
@@ -959,10 +1018,11 @@ export function BranchingCanvas() {
                     linearBranchNav={getLinearBranchNav(p, panels, setExpandedPanelId)}
                     detachLinearComposer={detachLinearComposer}
                     onFocusPanel={() => {
+                      const storeNodes = useConversationStore.getState().nodes;
                       const tail =
                         p.tailLeafId ??
                         (p.headUserId
-                          ? computeLatestLeafFromUserHead(nodes, p.headUserId)
+                          ? computeLatestLeafFromUserHead(storeNodes, p.headUserId)
                           : null);
                       if (tail) setActivePath(tail);
                     }}
@@ -1026,8 +1086,11 @@ export function BranchingCanvas() {
       ) : null}
 
       {!isExpanded ? (
-        <div className="pointer-events-none absolute bottom-3 right-3 z-20 rounded-md bg-black/50 px-2 py-1 text-[11px] text-white/80 tabular-nums">
-          {Math.round(zoom * 100)}%
+        <div
+          ref={zoomBadgeRef}
+          className="pointer-events-none absolute bottom-3 right-3 z-20 rounded-md bg-black/50 px-2 py-1 text-[11px] text-white/80 tabular-nums"
+        >
+          {Math.round(INITIAL_ZOOM * 100)}%
         </div>
       ) : null}
     </div>
@@ -1061,9 +1124,31 @@ function ExpandNodeButton({
         onPress();
       }}
     >
-      <span className="material-symbols-rounded text-[18px] leading-none" aria-hidden>
-        {isExpandedFocus ? 'close_fullscreen' : 'expand_content'}
-      </span>
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        aria-hidden
+      >
+        {isExpandedFocus ? (
+          <path
+            d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ) : (
+          <path
+            d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        )}
+      </svg>
     </button>
   );
 }
@@ -1251,9 +1336,26 @@ function LinearUserBubble({
                 setDraft(content);
               }}
             >
-              <span className="material-symbols-rounded text-[18px] leading-none" aria-hidden>
-                edit
-              </span>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                aria-hidden
+              >
+                <path
+                  d="M4 20h4.5L19 9.5 14.5 5 4 15.5V20Z"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M13.5 6 18 10.5"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
             </button>
           </>
         )}
@@ -1266,7 +1368,6 @@ function FrozenPanel({
   panel,
   nodes,
   layout,
-  linearRole,
   left,
   top,
   setPanelEl,
@@ -1287,7 +1388,10 @@ function FrozenPanel({
   linearBranchNav?: LinearBranchNav | null;
   isStreaming: boolean;
 }) {
-  const flat = flattenFrozenThrough(nodes, panel.throughId);
+  const flat = useMemo(
+    () => flattenFrozenThrough(nodes, panel.throughId),
+    [nodes, panel.throughId],
+  );
   const isLinear = layout === 'linear';
   const nav = isLinear ? linearBranchNav ?? null : null;
 
@@ -1350,7 +1454,17 @@ function FrozenPanel({
                       : 'rounded-bl-[3px] bg-zinc-200 text-zinc-900',
                   ].join(' ')}
                 >
-                  {msg.content || (
+                  {msg.content ? (
+                    msg.role === 'assistant' ? (
+                      <AssistantMarkdown
+                        content={msg.content}
+                        variant="compact"
+                        streaming={false}
+                      />
+                    ) : (
+                      msg.content
+                    )
+                  ) : (
                     <span className="opacity-50">(empty)</span>
                   )}
                 </div>
@@ -1373,7 +1487,6 @@ function LivePanel({
   panel,
   nodes,
   layout,
-  linearRole,
   left,
   top,
   isStreaming,
@@ -1408,7 +1521,10 @@ function LivePanel({
 }) {
   const [draft, setDraft] = useState('');
 
-  const flat = flattenLivePanel(nodes, panel.headUserId, panel.tailLeafId);
+  const flat = useMemo(
+    () => flattenLivePanel(nodes, panel.headUserId, panel.tailLeafId),
+    [nodes, panel.headUserId, panel.tailLeafId],
+  );
 
   const showInput = panel.canvasChildIds.length === 0;
 
@@ -1532,6 +1648,16 @@ function LivePanel({
                     <span className="opacity-70">…</span>
                   ) : msg.content.trim().length === 0 ? (
                     <span className="opacity-50">(empty)</span>
+                  ) : msg.role === 'assistant' ? (
+                    <AssistantMarkdown
+                      content={msg.content}
+                      variant="compact"
+                      streaming={
+                        isStreaming &&
+                        i === flat.length - 1 &&
+                        msg.nodeId === panel.tailLeafId
+                      }
+                    />
                   ) : (
                     msg.content
                   )}

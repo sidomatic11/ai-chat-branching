@@ -1,5 +1,6 @@
 'use client';
 
+import { memo, useMemo } from 'react';
 import {
   NODE_WIDTH,
   SVG_OFFSET,
@@ -9,7 +10,7 @@ import {
 
 type PanelShape = { canvasChildIds: string[] };
 
-export function ConnectorsSvg({
+export const ConnectorsSvg = memo(function ConnectorsSvg({
   panels,
   positions,
   measure,
@@ -18,43 +19,47 @@ export function ConnectorsSvg({
   positions: Record<string, { x: number; y: number }>;
   measure: (panelId: string) => number;
 }) {
-  const segments: string[] = [];
+  const segments = useMemo(() => {
+    const nextSegments: string[] = [];
 
-  for (const id of Object.keys(panels)) {
-    const p = panels[id];
-    if (!p?.canvasChildIds.length) continue;
+    for (const id of Object.keys(panels)) {
+      const p = panels[id];
+      if (!p?.canvasChildIds.length) continue;
 
-    const pos = positions[id];
-    if (!pos) continue;
+      const pos = positions[id];
+      if (!pos) continue;
 
-    const pCX = pos.x + NODE_WIDTH / 2 + SVG_OFFSET;
-    const pBot = pos.y + measure(id) + SVG_OFFSET;
-    const midY = pBot + V_GAP * 0.44;
+      const pCX = pos.x + NODE_WIDTH / 2 + SVG_OFFSET;
+      const pBot = pos.y + measure(id) + SVG_OFFSET;
+      const midY = pBot + V_GAP * 0.44;
 
-    const firstChildId = p.canvasChildIds[0];
-    if (!firstChildId) continue;
-    const firstPos = positions[firstChildId];
-    if (!firstPos) continue;
-    const cTopY = firstPos.y + SVG_OFFSET;
+      const firstChildId = p.canvasChildIds[0];
+      if (!firstChildId) continue;
+      const firstPos = positions[firstChildId];
+      if (!firstPos) continue;
+      const cTopY = firstPos.y + SVG_OFFSET;
 
-    const childCenters = p.canvasChildIds.map(cid => {
-      const c = positions[cid];
-      return c ? c.x + NODE_WIDTH / 2 + SVG_OFFSET : pCX;
-    });
+      const childCenters = p.canvasChildIds.map(cid => {
+        const c = positions[cid];
+        return c ? c.x + NODE_WIDTH / 2 + SVG_OFFSET : pCX;
+      });
 
-    segments.push(`M${pCX} ${pBot}L${pCX} ${midY}`);
+      nextSegments.push(`M${pCX} ${pBot}L${pCX} ${midY}`);
 
-    if (p.canvasChildIds.length === 1) {
-      segments.push(`M${pCX} ${midY}L${childCenters[0]!} ${cTopY}`);
-    } else {
-      segments.push(
-        `M${childCenters[0]!} ${midY}L${childCenters[childCenters.length - 1]!} ${midY}`,
-      );
-      for (const cx of childCenters) {
-        segments.push(`M${cx} ${midY}L${cx} ${cTopY}`);
+      if (p.canvasChildIds.length === 1) {
+        nextSegments.push(`M${pCX} ${midY}L${childCenters[0]!} ${cTopY}`);
+      } else {
+        nextSegments.push(
+          `M${childCenters[0]!} ${midY}L${childCenters[childCenters.length - 1]!} ${midY}`,
+        );
+        for (const cx of childCenters) {
+          nextSegments.push(`M${cx} ${midY}L${cx} ${cTopY}`);
+        }
       }
     }
-  }
+
+    return nextSegments;
+  }, [measure, panels, positions]);
 
   return (
     <svg
@@ -65,7 +70,6 @@ export function ConnectorsSvg({
     >
       {segments.map((d, i) => (
         <path
-          // eslint-disable-next-line react/no-array-index-key -- stable geometry batch
           key={i}
           d={d}
           stroke="#f5c542"
@@ -76,4 +80,4 @@ export function ConnectorsSvg({
       ))}
     </svg>
   );
-}
+});
