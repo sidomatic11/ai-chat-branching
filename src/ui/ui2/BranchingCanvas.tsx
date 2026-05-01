@@ -26,14 +26,20 @@ import {
   flattenLivePanel,
   latestAssistantId,
 } from '@/ui/ui2/graphPath';
+import type { CollapseViewportAnchor } from '@/ui/ui2/viewportSync';
+import {
+  panToPlaceWorldOnScreen,
+  pickDominantVisiblePanel,
+  worldPointForPanelFracY,
+} from '@/ui/ui2/viewportSync';
 
 type PanelLayoutMode = 'canvas' | 'linear';
 
 /** Set false to disable FLIP and restore instant mode switches. */
-const ENABLE_MODE_FLIP = true;
+const ENABLE_MODE_FLIP = false;
 
 /** Canvas zoom-in past this factor opens linear mode on the panel under the cursor. */
-const CANVAS_ZOOM_ENTER_LINEAR = 1.75;
+const CANVAS_ZOOM_ENTER_LINEAR = 1.5;
 
 type PendingExpandFlip = {
   panelId: string;
@@ -83,10 +89,13 @@ export function BranchingCanvas() {
 
   const panelEls = useRef<Map<string, HTMLDivElement>>(new Map());
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const linearScrollRef = useRef<HTMLDivElement | null>(null);
   const expandedModeRef = useRef(false);
   const pendingExpandRef = useRef<PendingExpandFlip | null>(null);
   const pendingCollapseRef = useRef<Map<string, DOMRect> | null>(null);
+  const pendingCollapseAnchorRef = useRef<CollapseViewportAnchor | null>(null);
   const flipWrapRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const measureRef = useRef<(id: string) => number>(() => 260);
 
   const [expandedPanelId, setExpandedPanelId] = useState<string | null>(null);
   const [flipLock, setFlipLock] = useState(false);
@@ -113,22 +122,44 @@ export function BranchingCanvas() {
     rebuildCanvasFromGraph(useConversationStore.getState().nodes),
   );
 
+  const panelsRef = useRef(panels);
+  const rootPanelIdRef = useRef(rootPanelId);
+
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>(
     {},
   );
 
+  useLayoutEffect(() => {
+    panelsRef.current = panels;
+    rootPanelIdRef.current = rootPanelId;
+  }, [panels, rootPanelId]);
+
   const nodeCount = useMemo(() => Object.keys(nodes).length, [nodes]);
   const prevNodeCountRef = useRef<number | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const prev = prevNodeCountRef.current;
-    prevNodeCountRef.current = nodeCount;
-    if (prev === null) return;
-    // Streaming only mutates message text — same count. Structural edits (send, edit/resend, branch) change count.
+
+    if (prev === null) {
+      prevNodeCountRef.current = nodeCount;
+      // Empty / fresh conversation: start in linear (use existing seed canvas ids).
+      if (nodeCount === 1 && rootPanelId && panels[rootPanelId]) {
+        setExpandedPanelId(rootPanelId);
+      }
+      return;
+    }
+
     if (prev === nodeCount) return;
-    setCanvas(rebuildCanvasFromGraph(nodes));
+
+    const canvas = rebuildCanvasFromGraph(nodes);
+    prevNodeCountRef.current = nodeCount;
+    setCanvas(canvas);
     setPositions({});
-  }, [nodeCount, nodes]);
+    // Clear chat (or any jump back to lone root): open linear on the root panel.
+    if (nodeCount === 1) {
+      setExpandedPanelId(canvas.rootPanelId);
+    }
+  }, [nodeCount, nodes, rootPanelId, panels]);
 
   expandedModeRef.current = expandedPanelId != null;
 
@@ -152,12 +183,99 @@ export function BranchingCanvas() {
       setExpandedPanelId(null);
       return;
     }
+    // After clear, active leaf is ROOT — map to the empty live root panel.
+    if (leaf === ROOT_ID && nodeCount === 1 && rootPanelId && panels[rootPanelId]) {
+      setExpandedPanelId(rootPanelId);
+      return;
+    }
     const nextId = findLivePanelIdForGraphLeaf(panels, nodes, leaf);
     setExpandedPanelId(nextId);
-  }, [expandedPanelId, panels, nodes]);
+  }, [expandedPanelId, panels, nodes, nodeCount, rootPanelId]);
+
+  const measure = useCallback((panelId: string) => {
+    const el = panelEls.current.get(panelId);
+    return el ? el.offsetHeight : 260;
+  }, []);
+
+  useLayoutEffect(() => {
+    measureRef.current = measure;
+  }, [measure]);
+
+  const applyPostCollapseViewport = useCallback((anchor: CollapseViewportAnchor) => {
+    const pv = viewportRef.current;
+    if (!pv) return;
+    const storePanels = panelsRef.current;
+    const root = rootPanelIdRef.current;
+    if (!root || !storePanels[root]) return;
+
+    const base: Record<string, { id: string; canvasChildIds: string[] }> = {};
+    for (const p of Object.values(storePanels)) {
+      base[p.id] = { id: p.id, canvasChildIds: p.canvasChildIds };
+    }
+
+    const pos = layoutAllPanels(
+      root,
+      base,
+      measureRef.current,
+      120,
+      40,
+    );
+    setPositions(pos);
+
+    const h = measureRef.current(anchor.panelId);
+    const wp = worldPointForPanelFracY(anchor.panelId, anchor.fracY, pos, h);
+    if (!wp) return;
+
+    const z = 1;
+    zoomRef.current = z;
+    setZoom(z);
+    const panNext = panToPlaceWorldOnScreen(
+      pv,
+      anchor.focalClientX,
+      anchor.focalClientY,
+      wp.wx,
+      wp.wy,
+      z,
+    );
+    panRef.current = panNext;
+    setPan(panNext);
+  }, []);
+
+  const captureCollapseAnchor = useCallback(() => {
+    const ex = expandedPanelId;
+    if (!ex) return;
+    const chain = getExpandedLinearChainIds(panels, ex);
+    const scrollEl = linearScrollRef.current;
+    if (scrollEl && chain.length > 0) {
+      const pick = pickDominantVisiblePanel(
+        chain,
+        flipWrapRefs.current,
+        scrollEl.getBoundingClientRect(),
+        ex,
+      );
+      pendingCollapseAnchorRef.current = {
+        panelId: pick.panelId,
+        focalClientX: pick.focalClientX,
+        focalClientY: pick.focalClientY,
+        fracY: pick.fracY,
+      };
+      return;
+    }
+    const vp = viewportRef.current;
+    if (vp) {
+      const r = vp.getBoundingClientRect();
+      pendingCollapseAnchorRef.current = {
+        panelId: ex,
+        focalClientX: r.left + r.width / 2,
+        focalClientY: r.top + r.height / 2,
+        fracY: 0.5,
+      };
+    }
+  }, [expandedPanelId, panels]);
 
   const collapseExpanded = useCallback(() => {
     if (!expandedPanelId) return;
+    captureCollapseAnchor();
     if (ENABLE_MODE_FLIP) {
       const chain = getExpandedLinearChainIds(panels, expandedPanelId);
       const rects = new Map<string, DOMRect>();
@@ -169,15 +287,15 @@ export function BranchingCanvas() {
       setFlipLock(true);
     }
     setExpandedPanelId(null);
-  }, [expandedPanelId, panels]);
+  }, [expandedPanelId, panels, captureCollapseAnchor]);
 
   const handleExpandToggle = useCallback(
     (panelId: string) => {
       if (expandedPanelId === panelId) {
-        if (ENABLE_MODE_FLIP) collapseExpanded();
-        else setExpandedPanelId(null);
+        collapseExpanded();
         return;
       }
+      pendingCollapseAnchorRef.current = null;
       if (ENABLE_MODE_FLIP) {
         const chain = getExpandedLinearChainIds(panels, panelId);
         const rects = new Map<string, DOMRect>();
@@ -195,11 +313,6 @@ export function BranchingCanvas() {
 
   const handleExpandToggleRef = useRef(handleExpandToggle);
   handleExpandToggleRef.current = handleExpandToggle;
-
-  const measure = useCallback((panelId: string) => {
-    const el = panelEls.current.get(panelId);
-    return el ? el.offsetHeight : 260;
-  }, []);
 
   const panelBase = useMemo(() => {
     const out: Record<string, { id: string; canvasChildIds: string[] }> = {};
@@ -621,7 +734,18 @@ export function BranchingCanvas() {
         if (!firstRect || !el) continue;
         promises.push(runFlipToNatural(el, firstRect, DEFAULT_FLIP_OPTS, signal));
       }
-      const done = () => setFlipLock(false);
+      const done = () => {
+        const anchor = pendingCollapseAnchorRef.current;
+        pendingCollapseAnchorRef.current = null;
+        setFlipLock(false);
+        if (anchor) {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              applyPostCollapseViewport(anchor);
+            });
+          });
+        }
+      };
       if (promises.length === 0) done();
       else void Promise.all(promises).then(done);
       return () => ac.abort();
@@ -644,7 +768,30 @@ export function BranchingCanvas() {
     }
 
     return () => ac.abort();
-  }, [expandedPanelId]);
+  }, [expandedPanelId, applyPostCollapseViewport]);
+
+  /** Instant collapse (no FLIP): apply zoom + pan once linear unmounts. */
+  useLayoutEffect(() => {
+    if (expandedPanelId !== null) return;
+    if (flipLock) return;
+    const anchor = pendingCollapseAnchorRef.current;
+    if (!anchor) return;
+    pendingCollapseAnchorRef.current = null;
+    applyPostCollapseViewport(anchor);
+  }, [expandedPanelId, flipLock, applyPostCollapseViewport]);
+
+  /** Linear: keep focus panel in view after expand FLIP and on branch nav. */
+  useLayoutEffect(() => {
+    if (!expandedPanelId || flipLock) return;
+    const id = expandedPanelId;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        flipWrapRefs.current
+          .get(id)
+          ?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+      });
+    });
+  }, [expandedPanelId, flipLock]);
 
   const setFlipWrapRef = useCallback((id: string, el: HTMLDivElement | null) => {
     if (el) flipWrapRefs.current.set(id, el);
@@ -745,6 +892,7 @@ export function BranchingCanvas() {
           {/* Scrollport must not be a flex container: flex+overflow-auto often breaks scrolling (incl. WebKit).
               Perspective on an ancestor of overflow:auto also breaks trackpad scroll — keep it on flip wraps only. */}
           <div
+            ref={linearScrollRef}
             className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4"
             style={{ WebkitOverflowScrolling: 'touch' }}
             onPointerDownCapture={e => {
@@ -769,7 +917,8 @@ export function BranchingCanvas() {
                   <div
                     key={p.id}
                     ref={el => setFlipWrapRef(p.id, el)}
-                    className="isolate w-full min-w-0 max-w-2xl overflow-x-hidden [perspective:1200px] [transition:none] [backface-visibility:hidden]"
+                    className="isolate mx-auto min-w-0 overflow-x-hidden [perspective:1200px] [transition:none] [backface-visibility:hidden]"
+                    style={{ width: NODE_WIDTH }}
                   >
                     <FrozenPanel
                       panel={p}
@@ -791,7 +940,8 @@ export function BranchingCanvas() {
                 <div
                   key={p.id}
                   ref={el => setFlipWrapRef(p.id, el)}
-                  className="isolate w-full min-w-0 max-w-2xl overflow-x-hidden [perspective:1200px] [transition:none] [backface-visibility:hidden]"
+                  className="isolate mx-auto min-w-0 overflow-x-hidden [perspective:1200px] [transition:none] [backface-visibility:hidden]"
+                  style={{ width: NODE_WIDTH }}
                 >
                   <LivePanel
                     panel={p}
@@ -824,7 +974,7 @@ export function BranchingCanvas() {
           </div>
           {linearFooterComposerPanel ? (
             <div className="shrink-0 border-t border-zinc-200 bg-white px-3 pb-3 pt-2">
-              <div className="mx-auto w-full max-w-2xl px-2 py-2">
+              <div className="mx-auto px-2 py-2" style={{ width: NODE_WIDTH }}>
                 <div className="flex items-center gap-1.5">
                   <input
                     ref={linearComposerInputRef}
@@ -1144,7 +1294,7 @@ function FrozenPanel({
   const cardClass = [
     'flex flex-col bg-white transition-[min-width,box-shadow] duration-300 ease-out',
     isLinear
-      ? 'relative z-10 w-full max-w-2xl shrink-0 self-center'
+      ? 'relative z-10 w-full shrink-0 self-center'
       : 'absolute z-[1] overflow-hidden rounded-[14px] shadow-[0_4px_24px_rgba(0,0,0,0.35)]',
   ].join(' ');
 
@@ -1155,7 +1305,7 @@ function FrozenPanel({
       className={cardClass}
       style={
         isLinear
-          ? undefined
+          ? { width: NODE_WIDTH }
           : { left, top, width: NODE_WIDTH, zIndex: 1 }
       }
       onMouseDown={e => e.stopPropagation()}
@@ -1272,7 +1422,7 @@ function LivePanel({
   const cardClass = [
     'flex flex-col bg-white transition-[min-width,box-shadow] duration-300 ease-out',
     isLinear
-      ? 'relative z-10 w-full max-w-2xl shrink-0 self-center'
+      ? 'relative z-10 w-full shrink-0 self-center'
       : 'absolute z-[1] rounded-[14px] shadow-[0_4px_24px_rgba(0,0,0,0.35)]',
   ].join(' ');
 
@@ -1285,7 +1435,7 @@ function LivePanel({
       className={cardClass}
       style={
         isLinear
-          ? undefined
+          ? { width: NODE_WIDTH }
           : { left, top, width: NODE_WIDTH, zIndex: 1 }
       }
       onMouseDown={e => {

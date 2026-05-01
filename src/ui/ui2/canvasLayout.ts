@@ -1,4 +1,4 @@
-export const NODE_WIDTH = 255;
+export const NODE_WIDTH = 600;
 export const H_GAP = 44;
 export const V_GAP = 80;
 export const SVG_OFFSET = 1000;
