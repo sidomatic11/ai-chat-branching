@@ -42,7 +42,7 @@ export function ChatViewUi2() {
           </div>
         ) : null}
 
-        <main className="min-h-0 flex-1">
+        <main className="flex min-h-0 flex-1 flex-col">
           <BranchingCanvas />
         </main>
       </div>

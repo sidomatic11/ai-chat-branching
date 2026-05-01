@@ -32,11 +32,46 @@ type PanelLayoutMode = 'canvas' | 'linear';
 /** Set false to disable FLIP and restore instant mode switches. */
 const ENABLE_MODE_FLIP = true;
 
+/** Canvas zoom-in past this factor opens linear mode on the panel under the cursor. */
+const CANVAS_ZOOM_ENTER_LINEAR = 1.75;
+
 type PendingExpandFlip = {
   panelId: string;
   chain: string[];
   rects: Map<string, DOMRect>;
 };
+
+/** After a full graph rebuild, canvas panel ids change — map expanded view to the active thread leaf. */
+function findLivePanelIdForGraphLeaf(
+  panels: Record<string, CanvasPanelState>,
+  nodes: Record<string, import('@/store/conversationStore').MessageNode>,
+  leafId: string,
+): string | null {
+  for (const p of Object.values(panels)) {
+    if (p.kind !== 'live' || !p.headUserId) continue;
+    const tail =
+      p.tailLeafId ?? computeLatestLeafFromUserHead(nodes, p.headUserId);
+    if (tail === leafId) return p.id;
+  }
+  return null;
+}
+
+/** Topmost `[data-panel-node]` under screen coords (document paint order). */
+function findPanelIdAtClientPoint(
+  clientX: number,
+  clientY: number,
+  panelEls: Map<string, HTMLDivElement>,
+): string | null {
+  const stack = document.elementsFromPoint(clientX, clientY);
+  for (const el of stack) {
+    const root = el.closest('[data-panel-node]') as HTMLElement | null;
+    if (!root) continue;
+    for (const [id, panelEl] of panelEls) {
+      if (panelEl === root) return id;
+    }
+  }
+  return null;
+}
 
 export function BranchingCanvas() {
   const nodes = useConversationStore(s => s.nodes);
@@ -88,11 +123,11 @@ export function BranchingCanvas() {
   useEffect(() => {
     const prev = prevNodeCountRef.current;
     prevNodeCountRef.current = nodeCount;
-    if (nodeCount !== 1) return;
-    if (prev !== null && prev > 1) {
-      setCanvas(rebuildCanvasFromGraph(nodes));
-      setPositions({});
-    }
+    if (prev === null) return;
+    // Streaming only mutates message text — same count. Structural edits (send, edit/resend, branch) change count.
+    if (prev === nodeCount) return;
+    setCanvas(rebuildCanvasFromGraph(nodes));
+    setPositions({});
   }, [nodeCount, nodes]);
 
   expandedModeRef.current = expandedPanelId != null;
@@ -107,11 +142,19 @@ export function BranchingCanvas() {
     [expandedChainIds],
   );
 
-  useEffect(() => {
-    if (expandedPanelId && !panels[expandedPanelId]) {
+  useLayoutEffect(() => {
+    if (!expandedPanelId) return;
+    if (panels[expandedPanelId]) return;
+
+    const leaf =
+      useConversationStore.getState().activePathIds.at(-1) ?? null;
+    if (!leaf) {
       setExpandedPanelId(null);
+      return;
     }
-  }, [expandedPanelId, panels]);
+    const nextId = findLivePanelIdForGraphLeaf(panels, nodes, leaf);
+    setExpandedPanelId(nextId);
+  }, [expandedPanelId, panels, nodes]);
 
   const collapseExpanded = useCallback(() => {
     if (!expandedPanelId) return;
@@ -149,6 +192,9 @@ export function BranchingCanvas() {
     },
     [collapseExpanded, expandedPanelId, panels],
   );
+
+  const handleExpandToggleRef = useRef(handleExpandToggle);
+  handleExpandToggleRef.current = handleExpandToggle;
 
   const measure = useCallback((panelId: string) => {
     const el = panelEls.current.get(panelId);
@@ -235,6 +281,18 @@ export function BranchingCanvas() {
       panRef.current = newP;
       setZoom(newZ);
       setPan(newP);
+
+      const zoomingIn = newZ > prevZ;
+      const crossIntoLinear =
+        zoomingIn &&
+        prevZ <= CANVAS_ZOOM_ENTER_LINEAR &&
+        newZ > CANVAS_ZOOM_ENTER_LINEAR;
+      if (crossIntoLinear) {
+        const panelId = findPanelIdAtClientPoint(e.clientX, e.clientY, panelEls.current);
+        if (panelId) {
+          queueMicrotask(() => handleExpandToggleRef.current(panelId));
+        }
+      }
       return;
     }
 
@@ -263,7 +321,7 @@ export function BranchingCanvas() {
       if (expandedModeRef.current) {
         pinchTrack.active = true;
         pinchTrack.minScale = 1;
-        e.preventDefault();
+        // Don't preventDefault — blocking WebKit gesture events breaks two-finger scroll in linear mode.
         return;
       }
       e.preventDefault();
@@ -275,7 +333,6 @@ export function BranchingCanvas() {
         if (pinchTrack.active) {
           pinchTrack.minScale = Math.min(pinchTrack.minScale, scale);
         }
-        e.preventDefault();
         return;
       }
       e.preventDefault();
@@ -288,7 +345,6 @@ export function BranchingCanvas() {
         }
         pinchTrack.active = false;
         pinchTrack.minScale = 1;
-        e.preventDefault();
         return;
       }
       e.preventDefault();
@@ -512,6 +568,36 @@ export function BranchingCanvas() {
 
   const isExpanded = expandedPanelId != null;
 
+  /** Live leaf that actually accepts new messages — tail of the expanded chain, not always `expandedPanelId`. */
+  const linearFooterComposerPanel = useMemo((): LivePanelState | null => {
+    if (!expandedPanelId || expandedChainIds.length === 0) return null;
+    for (let i = expandedChainIds.length - 1; i >= 0; i--) {
+      const p = panels[expandedChainIds[i]!];
+      if (p?.kind === 'live' && p.canvasChildIds.length === 0) return p;
+    }
+    return null;
+  }, [expandedPanelId, expandedChainIds, panels]);
+
+  const [linearDraft, setLinearDraft] = useState('');
+  useEffect(() => {
+    setLinearDraft('');
+  }, [expandedPanelId, linearFooterComposerPanel?.id]);
+
+  const linearComposerInputRef = useRef<HTMLInputElement>(null);
+
+  const focusLinearComposer = useCallback(() => {
+    const el = linearComposerInputRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.focus({ preventScroll: true });
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isExpanded || !linearFooterComposerPanel || flipLock) return;
+    focusLinearComposer();
+  }, [isExpanded, linearFooterComposerPanel?.id, flipLock, isStreaming, focusLinearComposer]);
+
   const graphPanels = useMemo(() => {
     const list = Object.values(panels);
     if (!isExpanded) return list;
@@ -569,8 +655,8 @@ export function BranchingCanvas() {
     <div
       ref={viewportRef}
       className={[
-        'relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-zinc-950',
-        isExpanded ? 'cursor-default' : 'cursor-grab',
+        'relative flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-colors duration-300 ease-out',
+        isExpanded ? 'cursor-default bg-white' : 'cursor-grab bg-zinc-950',
         flipLock ? 'pointer-events-none' : '',
       ].join(' ')}
       onMouseDown={onCanvasMouseDown}
@@ -655,70 +741,137 @@ export function BranchingCanvas() {
       </div>
 
       {isExpanded ? (
-        <div
-          className="relative z-10 flex min-h-0 flex-1 flex-col items-stretch gap-0 overflow-y-auto px-3 py-4 pb-10 [perspective:1200px]"
-          style={{ WebkitOverflowScrolling: 'touch' }}
-        >
-          {expandedChainIds.map(id => {
-            const p = panels[id];
-            if (!p) return null;
-            const linearRole: 'focus' | 'ancestor' =
-              id === expandedPanelId ? 'focus' : 'ancestor';
-            if (p.kind === 'frozen') {
+        <div className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white transition-colors duration-300 ease-out">
+          {/* Scrollport must not be a flex container: flex+overflow-auto often breaks scrolling (incl. WebKit).
+              Perspective on an ancestor of overflow:auto also breaks trackpad scroll — keep it on flip wraps only. */}
+          <div
+            className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4"
+            style={{ WebkitOverflowScrolling: 'touch' }}
+            onPointerDownCapture={e => {
+              if (flipLock || !linearFooterComposerPanel) return;
+              const t = e.target as HTMLElement;
+              if (t.closest?.('[data-ui2-no-composer-refocus]')) return;
+              // Keep focus in composer; skip only when editing another field.
+              if (t.closest?.('input, textarea, select, [contenteditable=true]')) return;
+              focusLinearComposer();
+            }}
+          >
+            <div className="flex flex-col items-center gap-0">
+            {expandedChainIds.map(id => {
+              const p = panels[id];
+              if (!p) return null;
+              const linearRole: 'focus' | 'ancestor' =
+                id === expandedPanelId ? 'focus' : 'ancestor';
+              const detachLinearComposer =
+                linearFooterComposerPanel != null && p.id === linearFooterComposerPanel.id;
+              if (p.kind === 'frozen') {
+                return (
+                  <div
+                    key={p.id}
+                    ref={el => setFlipWrapRef(p.id, el)}
+                    className="isolate w-full min-w-0 max-w-2xl overflow-x-hidden [perspective:1200px] [transition:none] [backface-visibility:hidden]"
+                  >
+                    <FrozenPanel
+                      panel={p}
+                      nodes={nodes}
+                      layout="linear"
+                      linearRole={linearRole}
+                      left={0}
+                      top={0}
+                      setPanelEl={setPanelEl}
+                      isExpandedFocus={linearRole === 'focus'}
+                      onExpandToggle={collapseExpanded}
+                      isStreaming={isStreaming}
+                      linearBranchNav={getLinearBranchNav(p, panels, setExpandedPanelId)}
+                    />
+                  </div>
+                );
+              }
               return (
                 <div
                   key={p.id}
                   ref={el => setFlipWrapRef(p.id, el)}
-                  className="isolate overflow-hidden [transition:none] [backface-visibility:hidden]"
+                  className="isolate w-full min-w-0 max-w-2xl overflow-x-hidden [perspective:1200px] [transition:none] [backface-visibility:hidden]"
                 >
-                  <FrozenPanel
+                  <LivePanel
                     panel={p}
                     nodes={nodes}
                     layout="linear"
                     linearRole={linearRole}
                     left={0}
                     top={0}
+                    isStreaming={isStreaming}
                     setPanelEl={setPanelEl}
+                    onSend={handleSend}
+                    onUserBubbleClick={handleUserBubbleClick}
                     isExpandedFocus={linearRole === 'focus'}
                     onExpandToggle={collapseExpanded}
-                    isStreaming={isStreaming}
                     linearBranchNav={getLinearBranchNav(p, panels, setExpandedPanelId)}
+                    detachLinearComposer={detachLinearComposer}
+                    onFocusPanel={() => {
+                      const tail =
+                        p.tailLeafId ??
+                        (p.headUserId
+                          ? computeLatestLeafFromUserHead(nodes, p.headUserId)
+                          : null);
+                      if (tail) setActivePath(tail);
+                    }}
                   />
                 </div>
               );
-            }
-            return (
-              <div
-                key={p.id}
-                ref={el => setFlipWrapRef(p.id, el)}
-                className="isolate overflow-hidden [transition:none] [backface-visibility:hidden]"
-              >
-                <LivePanel
-                  panel={p}
-                  nodes={nodes}
-                  layout="linear"
-                  linearRole={linearRole}
-                  left={0}
-                  top={0}
-                  isStreaming={isStreaming}
-                  setPanelEl={setPanelEl}
-                  onSend={handleSend}
-                  onUserBubbleClick={handleUserBubbleClick}
-                  isExpandedFocus={linearRole === 'focus'}
-                  onExpandToggle={collapseExpanded}
-                  linearBranchNav={getLinearBranchNav(p, panels, setExpandedPanelId)}
-                  onFocusPanel={() => {
-                    const tail =
-                      p.tailLeafId ??
-                      (p.headUserId
-                        ? computeLatestLeafFromUserHead(nodes, p.headUserId)
-                        : null);
-                    if (tail) setActivePath(tail);
-                  }}
-                />
+            })}
+            </div>
+          </div>
+          {linearFooterComposerPanel ? (
+            <div className="shrink-0 border-t border-zinc-200 bg-white px-3 pb-3 pt-2">
+              <div className="mx-auto w-full max-w-2xl px-2 py-2">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    ref={linearComposerInputRef}
+                    className="min-w-0 flex-1 rounded-lg border border-sky-500 bg-white px-2.5 py-1.5 text-[12.5px] text-zinc-900 outline-none placeholder:text-zinc-400"
+                    placeholder="Message…"
+                    value={linearDraft}
+                    disabled={isStreaming}
+                    onMouseDown={e => e.stopPropagation()}
+                    onChange={e => setLinearDraft(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        void (async () => {
+                          await handleSend(linearFooterComposerPanel, linearDraft);
+                          setLinearDraft('');
+                          focusLinearComposer();
+                        })();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={isStreaming || linearDraft.trim().length === 0}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-500 text-white disabled:cursor-not-allowed disabled:opacity-35"
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={() => {
+                      void (async () => {
+                        await handleSend(linearFooterComposerPanel, linearDraft);
+                        setLinearDraft('');
+                        focusLinearComposer();
+                      })();
+                    }}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden>
+                      <path
+                        d="M1 7h12M7 1l6 6-6 6"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                </div>
               </div>
-            );
-          })}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -734,14 +887,22 @@ export function BranchingCanvas() {
 function ExpandNodeButton({
   isExpandedFocus,
   onPress,
+  revealOnParentHover,
 }: {
   isExpandedFocus: boolean;
   onPress: () => void;
+  /** When true, parent must use `group`; button shows on row hover / focus-within / keyboard focus. */
+  revealOnParentHover?: boolean;
 }) {
   return (
     <button
       type="button"
-      className="-mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition hover:bg-zinc-200/80"
+      className={[
+        '-mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition hover:bg-zinc-200/80',
+        revealOnParentHover
+          ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400'
+          : '',
+      ].join(' ')}
       aria-expanded={isExpandedFocus}
       aria-label={isExpandedFocus ? 'Collapse to canvas' : 'Expand linear view'}
       onMouseDown={e => e.stopPropagation()}
@@ -813,7 +974,7 @@ function LinearBranchNavRow({
   onExpandToggle: () => void;
 }) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-[11.5px] text-zinc-600">
+    <div className="group flex shrink-0 items-center justify-between gap-2 bg-white px-3 py-2 text-[11.5px] text-zinc-600">
       <div className="flex min-w-0 flex-1 items-center justify-center gap-2">
         <button
           type="button"
@@ -845,7 +1006,108 @@ function LinearBranchNavRow({
           &gt;
         </button>
       </div>
-      <ExpandNodeButton isExpandedFocus onPress={onExpandToggle} />
+      <ExpandNodeButton isExpandedFocus onPress={onExpandToggle} revealOnParentHover />
+    </div>
+  );
+}
+
+/** Linear-mode user row: edit (Material edit icon left of bubble on hover) + resend via store. */
+function LinearUserBubble({
+  nodeId,
+  content,
+  isStreaming,
+}: {
+  nodeId: string;
+  content: string;
+  isStreaming: boolean;
+}) {
+  const editAndResend = useConversationStore(s => s.editAndResend);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  return (
+    <div className="flex w-full justify-end">
+      <div
+        className={[
+          'group flex max-w-[78%] items-center gap-1',
+          // row-reverse: DOM order bubble then control → icon renders left of bubble (no overflow clip)
+          !editing ? 'flex-row-reverse' : 'min-w-0 flex-1 flex-col',
+        ].join(' ')}
+      >
+        {editing ? (
+          <div
+            data-ui2-no-composer-refocus
+            className="w-full rounded-xl rounded-br-[3px] bg-sky-500 px-2.5 py-2 text-left text-[12.5px] leading-snug text-white"
+            onMouseDown={e => e.stopPropagation()}
+          >
+            <textarea
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              rows={3}
+              disabled={isStreaming}
+              className="w-full min-h-[4.5rem] resize-y rounded-lg border border-white/30 bg-white/15 px-2 py-1.5 text-[12.5px] text-white outline-none placeholder:text-white/50"
+            />
+            <div className="mt-1.5 flex justify-end gap-1.5">
+              <button
+                type="button"
+                disabled={isStreaming}
+                className="rounded-md px-2 py-1 text-xs font-medium text-white/85 hover:bg-white/10"
+                onMouseDown={e => e.stopPropagation()}
+                onClick={e => {
+                  e.stopPropagation();
+                  setEditing(false);
+                  setDraft('');
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isStreaming || draft.trim().length === 0}
+                className="rounded-md bg-white px-2.5 py-1 text-xs font-medium text-sky-600 hover:bg-zinc-50 disabled:opacity-40"
+                onMouseDown={e => e.stopPropagation()}
+                onClick={e => {
+                  e.stopPropagation();
+                  void (async () => {
+                    await editAndResend(nodeId, draft);
+                    setEditing(false);
+                    setDraft('');
+                  })();
+                }}
+              >
+                Resend
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="min-w-0 flex-1 rounded-xl rounded-br-[3px] bg-sky-500 px-2.5 py-2 text-[12.5px] leading-snug text-white">
+              {content.trim().length === 0 ? (
+                <span className="opacity-50">(empty)</span>
+              ) : (
+                <span className="whitespace-pre-wrap break-words">{content}</span>
+              )}
+            </div>
+            <button
+              type="button"
+              data-ui2-no-composer-refocus
+              aria-label="Edit message"
+              disabled={isStreaming}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-400 opacity-0 transition hover:bg-zinc-100 hover:text-zinc-600 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:pointer-events-none disabled:opacity-0"
+              onMouseDown={e => e.stopPropagation()}
+              onClick={e => {
+                e.stopPropagation();
+                setEditing(true);
+                setDraft(content);
+              }}
+            >
+              <span className="material-symbols-rounded text-[18px] leading-none" aria-hidden>
+                edit
+              </span>
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -880,10 +1142,10 @@ function FrozenPanel({
   const nav = isLinear ? linearBranchNav ?? null : null;
 
   const cardClass = [
-    'flex flex-col overflow-hidden bg-white transition-[min-width,box-shadow] duration-300 ease-out',
+    'flex flex-col bg-white transition-[min-width,box-shadow] duration-300 ease-out',
     isLinear
       ? 'relative z-10 w-full max-w-2xl shrink-0 self-center'
-      : 'absolute z-[1] rounded-[14px] shadow-[0_4px_24px_rgba(0,0,0,0.35)]',
+      : 'absolute z-[1] overflow-hidden rounded-[14px] shadow-[0_4px_24px_rgba(0,0,0,0.35)]',
   ].join(' ');
 
   return (
@@ -917,25 +1179,34 @@ function FrozenPanel({
         {flat.length === 0 ? (
           <p className="px-2 py-6 text-center text-[12px] text-zinc-400">(empty)</p>
         ) : (
-          flat.map(msg => (
-            <div
-              key={msg.nodeId}
-              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
+          flat.map(msg =>
+            msg.role === 'user' && isLinear ? (
+              <LinearUserBubble
+                key={msg.nodeId}
+                nodeId={msg.nodeId}
+                content={msg.content}
+                isStreaming={isStreaming}
+              />
+            ) : (
               <div
-                className={[
-                  'max-w-[78%] rounded-xl px-2.5 py-2 text-[12.5px] leading-snug',
-                  msg.role === 'user'
-                    ? 'rounded-br-[3px] bg-sky-500 text-white'
-                    : 'rounded-bl-[3px] bg-zinc-200 text-zinc-900',
-                ].join(' ')}
+                key={msg.nodeId}
+                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
               >
-                {msg.content || (
-                  <span className="opacity-50">(empty)</span>
-                )}
+                <div
+                  className={[
+                    'max-w-[78%] rounded-xl px-2.5 py-2 text-[12.5px] leading-snug',
+                    msg.role === 'user'
+                      ? 'rounded-br-[3px] bg-sky-500 text-white'
+                      : 'rounded-bl-[3px] bg-zinc-200 text-zinc-900',
+                  ].join(' ')}
+                >
+                  {msg.content || (
+                    <span className="opacity-50">(empty)</span>
+                  )}
+                </div>
               </div>
-            </div>
-          ))
+            ),
+          )
         )}
       </div>
       {!isLinear ? (
@@ -963,6 +1234,7 @@ function LivePanel({
   isExpandedFocus,
   onExpandToggle,
   linearBranchNav,
+  detachLinearComposer,
 }: {
   panel: LivePanelState;
   nodes: Record<string, import('@/store/conversationStore').MessageNode>;
@@ -982,6 +1254,7 @@ function LivePanel({
   isExpandedFocus: boolean;
   onExpandToggle: () => void;
   linearBranchNav?: LinearBranchNav | null;
+  detachLinearComposer?: boolean;
 }) {
   const [draft, setDraft] = useState('');
 
@@ -1002,6 +1275,8 @@ function LivePanel({
       ? 'relative z-10 w-full max-w-2xl shrink-0 self-center'
       : 'absolute z-[1] rounded-[14px] shadow-[0_4px_24px_rgba(0,0,0,0.35)]',
   ].join(' ');
+
+  const showInlineInput = showInput && (!isLinear || !detachLinearComposer);
 
   return (
     <div
@@ -1048,6 +1323,16 @@ function LivePanel({
         ) : (
           flat.map((msg, i) => {
             const isUser = msg.role === 'user';
+            if (isUser && isLinear) {
+              return (
+                <LinearUserBubble
+                  key={`${msg.nodeId}-${i}`}
+                  nodeId={msg.nodeId}
+                  content={msg.content}
+                  isStreaming={isStreaming}
+                />
+              );
+            }
             const canBranch =
               layout === 'canvas' &&
               isUser &&
@@ -1107,7 +1392,7 @@ function LivePanel({
         )}
       </div>
 
-      {showInput ? (
+      {showInlineInput ? (
         <div className="shrink-0 border-t border-zinc-200 bg-white px-2 py-2">
           <div className="flex items-center gap-1.5">
             <input
