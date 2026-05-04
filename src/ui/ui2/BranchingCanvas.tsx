@@ -15,6 +15,7 @@ import {
   useConversationStore,
 } from '@/store/conversationStore';
 import { AssistantMarkdown } from '@/ui/AssistantMarkdown';
+import { BranchSwitcherDots } from '@/ui/ui1b/BranchSwitcherDots';
 import { getExpandedLinearChainIds } from '@/ui/ui2/canvasChain';
 import { ConnectorsSvg } from '@/ui/ui2/ConnectorsSvg';
 import { DEFAULT_FLIP_OPTS, runFlipToNatural } from '@/ui/ui2/modeTransitionFlip';
@@ -27,7 +28,7 @@ import type {
 import { rebuildCanvasFromGraph } from '@/ui/ui2/rebuildCanvasFromGraph';
 import {
   computeLatestLeafFromUserHead,
-  flattenFrozenThrough,
+  flattenFrozenThroughInContext,
   flattenLivePanel,
   latestAssistantId,
 } from '@/ui/ui2/graphPath';
@@ -842,7 +843,7 @@ export function BranchingCanvas() {
     queueMicrotask(() => setLinearDraft(''));
   }, [expandedPanelId, linearFooterComposerPanel?.id]);
 
-  const linearComposerInputRef = useRef<HTMLInputElement>(null);
+  const linearComposerInputRef = useRef<HTMLTextAreaElement>(null);
 
   const focusLinearComposer = useCallback(() => {
     const el = linearComposerInputRef.current;
@@ -982,8 +983,10 @@ export function BranchingCanvas() {
     <div
       ref={viewportRef}
       className={[
-        'relative flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-colors duration-300 ease-out',
-        isExpanded ? 'cursor-default bg-white' : 'cursor-grab bg-zinc-950',
+        'relative flex min-h-0 w-full flex-1 flex-col transition-colors duration-300 ease-out',
+        // Canvas: clip so pan/zoom world cannot sprawl. Linear: leave overflow visible so composer
+        // box-shadow is not cut off at the viewport edge (matches UI1b).
+        isExpanded ? 'overflow-visible cursor-default bg-white' : 'overflow-hidden cursor-grab bg-zinc-950',
         flipLock ? 'pointer-events-none' : '',
       ].join(' ')}
       onMouseDown={onCanvasMouseDown}
@@ -1030,6 +1033,7 @@ export function BranchingCanvas() {
                 <FrozenPanel
                   key={p.id}
                   panel={p}
+                  panels={panels}
                   nodes={nodes}
                   layout="canvas"
                   left={pos.x}
@@ -1071,7 +1075,7 @@ export function BranchingCanvas() {
       </div>
 
       {isExpanded ? (
-        <div className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white transition-colors duration-300 ease-out">
+        <div className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col bg-white transition-colors duration-300 ease-out">
           {/* Scrollport must not be a flex container: flex+overflow-auto often breaks scrolling (incl. WebKit).
               Perspective on an ancestor of overflow:auto also breaks trackpad scroll — keep it on flip wraps only. */}
           <div
@@ -1106,6 +1110,7 @@ export function BranchingCanvas() {
                   >
                     <FrozenPanel
                       panel={p}
+                      panels={panels}
                       nodes={nodes}
                       layout="linear"
                       linearRole={linearRole}
@@ -1158,51 +1163,82 @@ export function BranchingCanvas() {
             </div>
           </div>
           {linearFooterComposerPanel ? (
-            <div className="shrink-0 border-t border-zinc-200 bg-white px-3 pb-3 pt-2">
-              <div className="mx-auto px-2 py-2" style={{ width: NODE_WIDTH }}>
-                <div className="flex items-center gap-2">
-                  <input
-                    ref={linearComposerInputRef}
-                    className="h-10 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3.5 text-[13.5px] text-slate-900 outline-none placeholder:text-slate-400 focus-visible:border-slate-500 focus-visible:ring-2 focus-visible:ring-slate-400/35"
-                    placeholder="Message…"
-                    value={linearDraft}
-                    disabled={isStreaming}
-                    onMouseDown={e => e.stopPropagation()}
-                    onChange={e => setLinearDraft(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        void (async () => {
-                          await handleSend(linearFooterComposerPanel, linearDraft);
-                          setLinearDraft('');
-                          focusLinearComposer();
-                        })();
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    disabled={isStreaming || linearDraft.trim().length === 0}
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-700 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-35"
-                    onMouseDown={e => e.stopPropagation()}
-                    onClick={() => {
-                      void (async () => {
-                        await handleSend(linearFooterComposerPanel, linearDraft);
-                        setLinearDraft('');
-                        focusLinearComposer();
-                      })();
-                    }}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
-                      <path
-                        d="M1 7h12M7 1l6 6-6 6"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </button>
+            <div className="shrink-0 bg-white px-3 pb-6 pt-2 sm:px-4">
+              <div className="mx-auto w-full" style={{ width: NODE_WIDTH, maxWidth: '100%' }}>
+                <div className="w-full rounded-3xl border border-slate-200/90 bg-white shadow-[0_10px_40px_rgba(15,23,42,0.08)]">
+                  <div className="flex flex-col gap-4 px-4 pb-3 pt-4 sm:px-5 sm:pb-3.5 sm:pt-5">
+                    <textarea
+                      ref={linearComposerInputRef}
+                      value={linearDraft}
+                      onChange={e => setLinearDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          void (async () => {
+                            const text = linearDraft.trim();
+                            if (!text || isStreaming) return;
+                            await handleSend(linearFooterComposerPanel, text);
+                            setLinearDraft('');
+                            focusLinearComposer();
+                          })();
+                        }
+                      }}
+                      placeholder="Write a message..."
+                      disabled={isStreaming}
+                      rows={1}
+                      onMouseDown={e => e.stopPropagation()}
+                      className="max-h-36 min-h-[28px] w-full resize-none bg-transparent text-[15px] leading-6 text-slate-900 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:text-slate-400"
+                    />
+                    <div className="flex items-center justify-between gap-3">
+                      <button
+                        type="button"
+                        className="grid size-8 shrink-0 cursor-pointer place-items-center rounded-full text-slate-600 hover:bg-slate-900/[0.05]"
+                        aria-label="Attach placeholder"
+                        onMouseDown={e => e.stopPropagation()}
+                      >
+                        <span className="material-symbols-rounded text-[22px] font-light">add</span>
+                      </button>
+                      <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+                        <button
+                          type="button"
+                          className="flex max-w-[min(52vw,14rem)] cursor-pointer items-center gap-0.5 rounded-lg py-1 pl-2 pr-1.5 text-left text-[13px] text-slate-600 hover:bg-slate-900/[0.04] sm:max-w-none"
+                          aria-label="Model: gemini 2.5 flash"
+                          onMouseDown={e => e.stopPropagation()}
+                        >
+                          <span className="truncate">gemini 2.5 flash</span>
+                          <span className="material-symbols-rounded shrink-0 text-[18px] text-slate-500">
+                            expand_more
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="grid size-8 cursor-pointer place-items-center rounded-full text-slate-600 hover:bg-slate-900/[0.05]"
+                          aria-label="Voice placeholder"
+                          onMouseDown={e => e.stopPropagation()}
+                        >
+                          <span className="material-symbols-rounded text-[20px]">graphic_eq</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isStreaming || linearDraft.trim().length === 0}
+                          className="grid size-9 shrink-0 cursor-pointer place-items-center rounded-full bg-slate-400 text-white shadow-sm hover:bg-slate-500 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
+                          aria-label="Send message"
+                          onMouseDown={e => e.stopPropagation()}
+                          onClick={() => {
+                            void (async () => {
+                              const text = linearDraft.trim();
+                              if (!text || isStreaming) return;
+                              await handleSend(linearFooterComposerPanel, text);
+                              setLinearDraft('');
+                              focusLinearComposer();
+                            })();
+                          }}
+                        >
+                          <span className="material-symbols-rounded text-[22px]">arrow_upward</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1226,21 +1262,33 @@ function ExpandNodeButton({
   isExpandedFocus,
   onPress,
   revealOnParentHover,
+  /** Match UI1b branch rail chips (arrows); use inside `BranchSwitcherDots` trailing slot. */
+  branchRail,
 }: {
   isExpandedFocus: boolean;
   onPress: () => void;
   /** When true, parent must use `group`; button shows on row hover / focus-within / keyboard focus. */
   revealOnParentHover?: boolean;
+  branchRail?: boolean;
 }) {
-  return (
-    <button
-      type="button"
-      className={[
-        '-mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition hover:bg-zinc-200/80',
+  const className = branchRail
+    ? [
+        'grid size-7 shrink-0 cursor-pointer place-items-center rounded-md border border-slate-200/90 bg-slate-100 text-slate-600',
+        'pointer-events-none opacity-0 transition-opacity',
+        'group-hover:pointer-events-auto group-hover:opacity-100',
+        'hover:bg-slate-200/90 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400',
+      ].join(' ')
+    : [
+        '-mr-1 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-zinc-500 transition hover:bg-zinc-200/80',
         revealOnParentHover
           ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400'
           : '',
-      ].join(' ')}
+      ].join(' ');
+
+  return (
+    <button
+      type="button"
+      className={className}
       aria-expanded={isExpandedFocus}
       aria-label={isExpandedFocus ? 'Collapse to canvas' : 'Expand linear view'}
       onMouseDown={e => e.stopPropagation()}
@@ -1326,47 +1374,28 @@ function getLinearBranchNav(
 
 function LinearBranchNavRow({
   nav,
-  isStreaming,
   onExpandToggle,
 }: {
   nav: LinearBranchNav;
-  isStreaming: boolean;
   onExpandToggle: () => void;
 }) {
   return (
-    <div className="group flex shrink-0 items-center justify-between gap-2 bg-white px-3 py-2.5 text-[12px] text-zinc-600">
-      <div className="flex min-w-0 flex-1 items-center justify-center gap-2">
-        <button
-          type="button"
-          disabled={isStreaming}
-          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs font-medium tabular-nums hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
-          aria-label="Previous branch"
-          onMouseDown={e => e.stopPropagation()}
-          onClick={e => {
-            e.stopPropagation();
-            nav.onPrev();
-          }}
-        >
-          &lt;
-        </button>
-        <span className="shrink-0 tabular-nums">
-          {nav.index + 1} / {nav.total}
-        </span>
-        <button
-          type="button"
-          disabled={isStreaming}
-          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs font-medium tabular-nums hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
-          aria-label="Next branch"
-          onMouseDown={e => e.stopPropagation()}
-          onClick={e => {
-            e.stopPropagation();
-            nav.onNext();
-          }}
-        >
-          &gt;
-        </button>
-      </div>
-      <ExpandNodeButton isExpandedFocus onPress={onExpandToggle} revealOnParentHover />
+    <div className="group shrink-0 bg-white px-3 py-2.5">
+      <BranchSwitcherDots
+        align="right"
+        activeIndex={nav.index}
+        branchCount={nav.total}
+        onPrev={() => {
+          nav.onPrev();
+        }}
+        onNext={() => {
+          nav.onNext();
+        }}
+        prevLabel="Previous branch"
+        nextLabel="Next branch"
+        dense
+        trailing={<ExpandNodeButton isExpandedFocus onPress={onExpandToggle} branchRail />}
+      />
     </div>
   );
 }
@@ -1399,7 +1428,7 @@ function LinearUserBubble({
         {editing ? (
           <div
             data-ui2-no-composer-refocus
-            className="w-full rounded-2xl rounded-br-[4px] bg-slate-200 px-3 py-2.5 text-left text-[13.5px] leading-[1.48] text-slate-900"
+            className="w-full rounded-xl bg-slate-200 px-4 py-2 text-left text-slate-900"
             onMouseDown={e => e.stopPropagation()}
           >
             <textarea
@@ -1407,7 +1436,7 @@ function LinearUserBubble({
               onChange={e => setDraft(e.target.value)}
               rows={3}
               disabled={isStreaming}
-              className="w-full min-h-[5rem] resize-y rounded-lg border border-slate-400/60 bg-white px-2.5 py-2 text-[13.5px] text-slate-900 outline-none placeholder:text-slate-400"
+              className="mt-2 w-full min-h-[5rem] resize-y rounded-lg border border-slate-200 bg-white/90 px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400"
             />
             <div className="mt-1.5 flex justify-end gap-1.5">
               <button
@@ -1443,11 +1472,13 @@ function LinearUserBubble({
           </div>
         ) : (
           <>
-            <div className="min-w-0 flex-1 rounded-2xl rounded-br-[4px] bg-slate-200 px-3 py-2.5 text-[13.5px] leading-[1.48] text-slate-900">
+            <div className="min-w-0 flex-1 rounded-xl bg-slate-200 px-4 py-2 text-slate-800">
               {content.trim().length === 0 ? (
                 <span className="opacity-50">(empty)</span>
               ) : (
-                <span className="whitespace-pre-wrap break-words">{content}</span>
+                <span className="whitespace-pre-wrap break-words text-[14px] leading-7">
+                  {content}
+                </span>
               )}
             </div>
             <button
@@ -1493,6 +1524,7 @@ function LinearUserBubble({
 
 function FrozenPanel({
   panel,
+  panels,
   nodes,
   layout,
   left,
@@ -1504,6 +1536,7 @@ function FrozenPanel({
   isStreaming,
 }: {
   panel: FrozenPanelState;
+  panels: Record<string, CanvasPanelState>;
   nodes: Record<string, import('@/store/conversationStore').MessageNode>;
   layout: PanelLayoutMode;
   linearRole?: 'focus' | 'ancestor';
@@ -1515,10 +1548,14 @@ function FrozenPanel({
   linearBranchNav?: LinearBranchNav | null;
   isStreaming: boolean;
 }) {
-  const flat = useMemo(
-    () => flattenFrozenThrough(nodes, panel.throughId),
-    [nodes, panel.throughId],
-  );
+  const flat = useMemo(() => {
+    let trimAfterNodeId: string | null = null;
+    if (panel.canvasParentId) {
+      const parent = panels[panel.canvasParentId];
+      if (parent?.kind === 'frozen') trimAfterNodeId = parent.throughId;
+    }
+    return flattenFrozenThroughInContext(nodes, panel.throughId, trimAfterNodeId);
+  }, [nodes, panel.throughId, panel.canvasParentId, panels]);
   const isLinear = layout === 'linear';
   const nav = isLinear ? linearBranchNav ?? null : null;
 
@@ -1550,11 +1587,7 @@ function FrozenPanel({
           <ExpandNodeButton isExpandedFocus={isExpandedFocus} onPress={onExpandToggle} />
         </div>
       ) : nav ? (
-        <LinearBranchNavRow
-          nav={nav}
-          isStreaming={isStreaming}
-          onExpandToggle={onExpandToggle}
-        />
+        <LinearBranchNavRow nav={nav} onExpandToggle={onExpandToggle} />
       ) : null}
       <div className="flex flex-col gap-4 px-3.5 py-3.5">
         {flat.length === 0 ? (
@@ -1580,21 +1613,21 @@ function FrozenPanel({
               >
                 <div
                   className={[
-                    'text-[13.5px] leading-[1.5]',
+                    'break-words text-[14px] leading-7',
                     msg.role === 'user'
-                      ? 'max-w-[78%] rounded-2xl rounded-br-[4px] bg-slate-200 px-3 py-2.5 leading-[1.48] text-slate-900'
-                      : 'w-full bg-white px-0.5 py-1.5 text-zinc-900',
+                      ? 'max-w-[78%] rounded-xl bg-slate-200 px-4 py-2 text-slate-800'
+                      : 'w-full max-w-none text-slate-900',
                   ].join(' ')}
                 >
                   {msg.content ? (
                     msg.role === 'assistant' ? (
                       <AssistantMarkdown
                         content={msg.content}
-                        variant="compact"
+                        variant="prose"
                         streaming={false}
                       />
                     ) : (
-                      msg.content
+                      <span className="whitespace-pre-wrap">{msg.content}</span>
                     )
                   ) : (
                     <span className="opacity-50">(empty)</span>
@@ -1693,11 +1726,7 @@ function LivePanel({
     >
       {isLinear ? (
         nav ? (
-          <LinearBranchNavRow
-            nav={nav}
-            isStreaming={isStreaming}
-            onExpandToggle={onExpandToggle}
-          />
+          <LinearBranchNavRow nav={nav} onExpandToggle={onExpandToggle} />
         ) : null
       ) : (
         <div className="flex shrink-0 items-center justify-between gap-2 rounded-t-[14px] border-b border-zinc-200 bg-zinc-50 px-3 py-2.5 text-[12px] font-semibold tracking-wide text-zinc-600">
@@ -1742,6 +1771,14 @@ function LivePanel({
               ? 'hover:shadow-[inset_0_0_0_2.5px_#a78bfa]'
               : 'hover:shadow-[inset_0_0_0_2.5px_#f5c542]';
 
+            const userBubbleClass = [
+              'max-w-[78%] break-words rounded-xl bg-slate-200 px-4 py-2 text-left text-[14px] leading-7 text-slate-800 whitespace-pre-wrap',
+              canBranch ? `cursor-pointer ${hoverRing}` : 'cursor-default',
+            ].join(' ');
+            const assistantBubbleClass = isLinear
+              ? 'w-full cursor-default text-left break-words text-[14px] leading-7 text-slate-900'
+              : 'w-full cursor-default bg-white px-0.5 py-1.5 text-left text-[13.5px] leading-[1.5] text-zinc-900';
+
             return (
               <div
                 key={`${msg.nodeId}-${i}`}
@@ -1761,13 +1798,9 @@ function LivePanel({
                         : 'Branch from here'
                       : undefined
                   }
-                  className={[
-                    'text-left text-[13.5px] leading-[1.5] transition',
-                    isUser
-                      ? `max-w-[78%] rounded-2xl rounded-br-[4px] bg-slate-200 px-3 py-2.5 leading-[1.48] text-slate-900 ${canBranch ? `cursor-pointer ${hoverRing}` : ''}`
-                      : 'w-full cursor-default bg-white px-0.5 py-1.5 text-zinc-900',
-                    !canBranch && isUser ? 'cursor-default' : '',
-                  ].join(' ')}
+                  className={['transition', isUser ? userBubbleClass : assistantBubbleClass].join(
+                    ' ',
+                  )}
                   onMouseDown={e => {
                     if (!canBranch) return;
                     e.stopPropagation();
@@ -1787,7 +1820,7 @@ function LivePanel({
                   ) : msg.role === 'assistant' ? (
                     <AssistantMarkdown
                       content={msg.content}
-                      variant="compact"
+                      variant={isLinear ? 'prose' : 'compact'}
                       streaming={
                         isStreaming &&
                         i === flat.length - 1 &&

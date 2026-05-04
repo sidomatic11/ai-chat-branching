@@ -76,14 +76,24 @@ export function slicePathFromHeadToLeaf(
     .filter((n): n is MessageNode => Boolean(n) && n.role !== 'root');
 }
 
-export function flattenFrozenThrough(
+/**
+ * Frozen transcript for UI2: root → `throughId`. When nested under another frozen,
+ * pass `trimAfterNodeId` as that parent’s `throughId` so the prefix is not repeated.
+ */
+export function flattenFrozenThroughInContext(
   nodes: Record<string, MessageNode>,
   throughId: string,
+  trimAfterNodeId: string | null,
 ): FlatMsg[] {
   if (throughId === ROOT_ID) return [];
   const pathIds = getPathToRootIds(nodes, throughId);
+  let ids = pathIds;
+  if (trimAfterNodeId) {
+    const idx = pathIds.indexOf(trimAfterNodeId);
+    if (idx >= 0) ids = pathIds.slice(idx + 1);
+  }
   const out: FlatMsg[] = [];
-  for (const id of pathIds) {
+  for (const id of ids) {
     const n = nodes[id];
     if (!n || n.role === 'root') continue;
     if (n.role === 'user' || n.role === 'assistant') {
@@ -91,6 +101,13 @@ export function flattenFrozenThrough(
     }
   }
   return out;
+}
+
+export function flattenFrozenThrough(
+  nodes: Record<string, MessageNode>,
+  throughId: string,
+): FlatMsg[] {
+  return flattenFrozenThroughInContext(nodes, throughId, null);
 }
 
 export function flattenLivePanel(

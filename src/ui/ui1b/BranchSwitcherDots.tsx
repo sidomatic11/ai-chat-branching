@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { useConversationStore } from '@/store/conversationStore';
 
 export function BranchSwitcherDots({
@@ -10,6 +11,10 @@ export function BranchSwitcherDots({
   onNext,
   prevLabel,
   nextLabel,
+  /** Tighter vertical spacing when embedded in a header row (e.g. UI2 linear). */
+  dense = false,
+  /** Render after the next chevron (e.g. collapse control); line spans full width of this component. */
+  trailing,
 }: {
   align: 'left' | 'right';
   activeIndex: number;
@@ -18,6 +23,8 @@ export function BranchSwitcherDots({
   onNext: () => void;
   prevLabel: string;
   nextLabel: string;
+  dense?: boolean;
+  trailing?: ReactNode;
 }) {
   const isStreaming = useConversationStore(s => s.isStreaming);
 
@@ -26,7 +33,7 @@ export function BranchSwitcherDots({
   const clusterAlign = align === 'right' ? 'ml-auto' : '';
 
   const arrowBtn = [
-    'grid size-7 shrink-0 place-items-center rounded-md border border-slate-200/90 bg-slate-100 text-slate-600',
+    'grid size-7 shrink-0 cursor-pointer place-items-center rounded-md border border-slate-200/90 bg-slate-100 text-slate-600',
     // Hidden until an ancestor with `group` is hovered (the message bubble below).
     'pointer-events-none opacity-0 transition-opacity',
     'group-hover:pointer-events-auto group-hover:opacity-100',
@@ -34,7 +41,12 @@ export function BranchSwitcherDots({
   ].join(' ');
 
   return (
-    <div className="relative mb-2 mt-0.5 flex h-6 w-full min-w-0 items-center">
+    <div
+      className={[
+        'relative flex h-6 w-full min-w-0 items-center',
+        dense ? 'mb-0 mt-0' : 'mb-2 mt-0.5',
+      ].join(' ')}
+    >
       <div
         className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-slate-200/90"
         aria-hidden
@@ -75,6 +87,7 @@ export function BranchSwitcherDots({
         >
           <span className="material-symbols-rounded text-[18px] leading-none">chevron_right</span>
         </button>
+        {trailing ? <div className="flex shrink-0 items-center">{trailing}</div> : null}
       </div>
     </div>
   );
