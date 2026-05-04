@@ -52,11 +52,40 @@ export type BranchFromUserResult = {
   rightHeadUserId: string;
 };
 
+/** Stable id on UI1 `<main>` scrollport; store reads DOM here for pre-navigation anchor offset. */
+export const UI1_SCROLL_CONTAINER_ID = 'ui1-chat-scroll-main';
+
+/** UI2 expanded linear column scrollport (`linearScrollRef`). */
+export const UI2_LINEAR_SCROLL_CONTAINER_ID = 'ui2-linear-scroll';
+
+export type Ui1ScrollIntent =
+  | { kind: 'pinUser'; userId: string }
+  | { kind: 'anchor'; nodeId: string; offsetBefore: number | null };
+
+/** Measure message node top relative to UI1 scroll container (client coords delta). */
+export function readUi1AnchorOffset(nodeId: string): number | null {
+  if (typeof document === 'undefined') return null;
+  const container = document.getElementById(UI1_SCROLL_CONTAINER_ID);
+  if (!container) return null;
+  const el = container.querySelector(`[data-message-id="${nodeId}"]`);
+  if (!el) return null;
+  const er = el.getBoundingClientRect();
+  const cr = container.getBoundingClientRect();
+  return er.top - cr.top;
+}
+
 export type ConversationStore = {
   nodes: Record<string, MessageNode>;
   activePathIds: string[]; // ordered root → current leaf
   isStreaming: boolean;
   error: string | null;
+  /** UI1: set with branch pagination so ChatView skips scroll-to-bottom once. Not persisted. */
+  skipNextScrollToBottom: boolean;
+  /**
+   * One-shot scroll behavior for UI1 linear chat (and UI2 linear consumes pinUser).
+   * Not persisted.
+   */
+  scrollIntent: Ui1ScrollIntent | null;
 
   // Actions
   clearConversation: () => void;
@@ -75,7 +104,10 @@ export type ConversationStore = {
     nodeId: string,
     direction: 'prev' | 'next',
   ) => void;
-  setActivePath: (leafId: string) => void;
+  setActivePath: (
+    leafId: string,
+    options?: { skipScrollToBottom?: boolean },
+  ) => void;
   clearError: () => void;
 };
 
@@ -312,11 +344,22 @@ async function streamAssistantText({
 
 function createInitialState(): Pick<
   ConversationStore,
-  'nodes' | 'activePathIds' | 'isStreaming' | 'error'
+  | 'nodes'
+  | 'activePathIds'
+  | 'isStreaming'
+  | 'error'
+  | 'skipNextScrollToBottom'
+  | 'scrollIntent'
 > {
   const persisted = loadPersistedState();
   if (persisted) {
-    return { ...persisted, isStreaming: false, error: null };
+    return {
+      ...persisted,
+      isStreaming: false,
+      error: null,
+      skipNextScrollToBottom: false,
+      scrollIntent: null,
+    };
   }
 
   const root = createRootNode();
@@ -325,6 +368,8 @@ function createInitialState(): Pick<
     activePathIds: [root.id],
     isStreaming: false,
     error: null,
+    skipNextScrollToBottom: false,
+    scrollIntent: null,
   };
 }
 
@@ -353,6 +398,8 @@ export const useConversationStore = create<ConversationStore>()(
       activePathIds: [root.id],
       isStreaming: false,
       error: null,
+      skipNextScrollToBottom: false,
+      scrollIntent: null,
     });
   },
 
@@ -412,9 +459,10 @@ export const useConversationStore = create<ConversationStore>()(
     };
   },
 
-  setActivePath: (leafId: string) => {
+  setActivePath: (leafId, options) => {
     set(state => ({
       activePathIds: getPathToRoot(state.nodes, leafId),
+      skipNextScrollToBottom: options?.skipScrollToBottom === true,
     }));
   },
 
@@ -448,7 +496,21 @@ export const useConversationStore = create<ConversationStore>()(
     const leafAssistantId = assistantIds[assistantIds.length - 1];
     if (!leafAssistantId) return;
 
-    get().setActivePath(getDeepestLeafId(nodes, leafAssistantId));
+    const leafId = getDeepestLeafId(nodes, leafAssistantId);
+    const scrollIntent: Ui1ScrollIntent =
+      parent.role === 'assistant'
+        ? {
+            kind: 'anchor',
+            nodeId: parentId,
+            offsetBefore: readUi1AnchorOffset(parentId),
+          }
+        : { kind: 'pinUser', userId: nextUserId };
+
+    set(state => ({
+      activePathIds: getPathToRoot(state.nodes, leafId),
+      skipNextScrollToBottom: true,
+      scrollIntent,
+    }));
   },
 
   navigateSibling: (nodeId, direction) => {
@@ -474,7 +536,17 @@ export const useConversationStore = create<ConversationStore>()(
 
     const nextAssistantId = assistantIds[nextIndex];
     if (!nextAssistantId) return;
-    get().setActivePath(getDeepestLeafId(nodes, nextAssistantId));
+    const leafId = getDeepestLeafId(nodes, nextAssistantId);
+    const scrollIntent: Ui1ScrollIntent = {
+      kind: 'anchor',
+      nodeId,
+      offsetBefore: readUi1AnchorOffset(nodeId),
+    };
+    set(state => ({
+      activePathIds: getPathToRoot(state.nodes, leafId),
+      skipNextScrollToBottom: true,
+      scrollIntent,
+    }));
   },
 
   sendMessage: async (content: string, options?: SendMessageOptions) => {
@@ -554,6 +626,8 @@ export const useConversationStore = create<ConversationStore>()(
         activePathIds: getPathToRoot(nodes, assistantId),
         isStreaming: true,
         error: null,
+        skipNextScrollToBottom: false,
+        scrollIntent: { kind: 'pinUser', userId },
       };
     });
 
@@ -620,6 +694,8 @@ export const useConversationStore = create<ConversationStore>()(
         activePathIds: getPathToRoot(nodes, assistantId),
         isStreaming: true,
         error: null,
+        skipNextScrollToBottom: false,
+        scrollIntent: { kind: 'pinUser', userId },
       };
     });
 
@@ -676,6 +752,8 @@ export const useConversationStore = create<ConversationStore>()(
         activePathIds: getPathToRoot(nodes, assistantId),
         isStreaming: true,
         error: null,
+        skipNextScrollToBottom: false,
+        scrollIntent: { kind: 'pinUser', userId: parentUserId },
       };
     });
 

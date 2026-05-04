@@ -135,7 +135,7 @@ export function AssistantMarkdown({
 
   if (variant === 'prose') {
     return (
-      <div className="prose prose-sm max-w-none text-sm leading-6 prose-pre:overflow-x-auto">
+      <div className="prose prose-sm prose-slate max-w-none text-sm leading-6 prose-pre:overflow-x-auto">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
       </div>
     );

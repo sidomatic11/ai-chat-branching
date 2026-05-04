@@ -9,7 +9,11 @@ import {
   useState,
 } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { ROOT_ID, useConversationStore } from '@/store/conversationStore';
+import {
+  ROOT_ID,
+  UI2_LINEAR_SCROLL_CONTAINER_ID,
+  useConversationStore,
+} from '@/store/conversationStore';
 import { AssistantMarkdown } from '@/ui/AssistantMarkdown';
 import { getExpandedLinearChainIds } from '@/ui/ui2/canvasChain';
 import { ConnectorsSvg } from '@/ui/ui2/ConnectorsSvg';
@@ -85,6 +89,7 @@ function findPanelIdAtClientPoint(
 
 export function BranchingCanvas() {
   const nodes = useConversationStore(s => s.nodes);
+  const activePathIds = useConversationStore(s => s.activePathIds);
   const sendMessage = useConversationStore(s => s.sendMessage);
   const branchFromUserMessage = useConversationStore(s => s.branchFromUserMessage);
   const createParallelChildThread = useConversationStore(s => s.createParallelChildThread);
@@ -97,6 +102,8 @@ export function BranchingCanvas() {
   const gridPatternRef = useRef<SVGPatternElement | null>(null);
   const zoomBadgeRef = useRef<HTMLDivElement | null>(null);
   const linearScrollRef = useRef<HTMLDivElement | null>(null);
+  const linearBranchScrollCompensationRef = useRef<number | null>(null);
+  const skipCenterScrollOnceRef = useRef(false);
   const expandedModeRef = useRef(false);
   const pendingExpandRef = useRef<PendingExpandFlip | null>(null);
   const pendingCollapseRef = useRef<Map<string, DOMRect> | null>(null);
@@ -801,6 +808,23 @@ export function BranchingCanvas() {
     [isStreaming, sendMessage, setActivePath, updateLivePanel],
   );
 
+  const switchLinearBranchPanel = useCallback(
+    (nextPanelId: string) => {
+      if (expandedPanelId) {
+        const scrollEl = linearScrollRef.current;
+        const wrap = flipWrapRefs.current.get(expandedPanelId);
+        if (scrollEl && wrap) {
+          linearBranchScrollCompensationRef.current =
+            wrap.getBoundingClientRect().top -
+            scrollEl.getBoundingClientRect().top;
+          skipCenterScrollOnceRef.current = true;
+        }
+      }
+      setExpandedPanelId(nextPanelId);
+    },
+    [expandedPanelId],
+  );
+
   const isExpanded = expandedPanelId != null;
 
   /** Live leaf that actually accepts new messages — tail of the expanded chain, not always `expandedPanelId`. */
@@ -902,9 +926,43 @@ export function BranchingCanvas() {
     applyPostCollapseViewport(anchor);
   }, [expandedPanelId, flipLock, applyPostCollapseViewport]);
 
-  /** Linear: keep focus panel in view after expand FLIP and on branch nav. */
+  /** Linear: after sibling-panel branch nav, keep viewport stable (see switchLinearBranchPanel). */
+  useLayoutEffect(() => {
+    const pending = linearBranchScrollCompensationRef.current;
+    if (pending === null || expandedPanelId == null) return;
+    const scrollEl = linearScrollRef.current;
+    const wrap = flipWrapRefs.current.get(expandedPanelId);
+    if (!scrollEl || !wrap) {
+      linearBranchScrollCompensationRef.current = null;
+      return;
+    }
+    linearBranchScrollCompensationRef.current = null;
+    const offsetAfter =
+      wrap.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+    scrollEl.scrollTop += pending - offsetAfter;
+  }, [expandedPanelId]);
+
+  /** Linear: pin user row after send / edit / regenerate (store `scrollIntent`). */
+  useLayoutEffect(() => {
+    if (!isExpanded || flipLock) return;
+    const intent = useConversationStore.getState().scrollIntent;
+    if (!intent || intent.kind !== 'pinUser') return;
+    const container = linearScrollRef.current;
+    if (!container) return;
+    const el = container.querySelector(`[data-message-id="${intent.userId}"]`);
+    if (el instanceof HTMLElement) {
+      el.scrollIntoView({ block: 'start', behavior: 'instant' });
+    }
+    useConversationStore.setState({ scrollIntent: null });
+  }, [activePathIds, isExpanded, flipLock]);
+
+  /** Linear: keep focus panel in view after expand FLIP (skip once after linear branch nav). */
   useLayoutEffect(() => {
     if (!expandedPanelId || flipLock) return;
+    if (skipCenterScrollOnceRef.current) {
+      skipCenterScrollOnceRef.current = false;
+      return;
+    }
     const id = expandedPanelId;
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -1017,6 +1075,7 @@ export function BranchingCanvas() {
           {/* Scrollport must not be a flex container: flex+overflow-auto often breaks scrolling (incl. WebKit).
               Perspective on an ancestor of overflow:auto also breaks trackpad scroll — keep it on flip wraps only. */}
           <div
+            id={UI2_LINEAR_SCROLL_CONTAINER_ID}
             ref={linearScrollRef}
             className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4"
             style={{ WebkitOverflowScrolling: 'touch' }}
@@ -1056,7 +1115,7 @@ export function BranchingCanvas() {
                       isExpandedFocus={linearRole === 'focus'}
                       onExpandToggle={collapseExpanded}
                       isStreaming={isStreaming}
-                      linearBranchNav={getLinearBranchNav(p, panels, setExpandedPanelId)}
+                      linearBranchNav={getLinearBranchNav(p, panels, switchLinearBranchPanel)}
                     />
                   </div>
                 );
@@ -1081,7 +1140,7 @@ export function BranchingCanvas() {
                     onUserBubbleClick={handleUserBubbleClick}
                     isExpandedFocus={linearRole === 'focus'}
                     onExpandToggle={collapseExpanded}
-                    linearBranchNav={getLinearBranchNav(p, panels, setExpandedPanelId)}
+                    linearBranchNav={getLinearBranchNav(p, panels, switchLinearBranchPanel)}
                     detachLinearComposer={detachLinearComposer}
                     onFocusPanel={() => {
                       const storeNodes = useConversationStore.getState().nodes;
@@ -1242,7 +1301,7 @@ type LinearBranchNav = {
 function getLinearBranchNav(
   panel: CanvasPanelState,
   panels: Record<string, CanvasPanelState>,
-  setExpandedPanelId: (id: string) => void,
+  switchToPanel: (id: string) => void,
 ): LinearBranchNav | null {
   const parentId = panel.canvasParentId;
   if (!parentId) return null;
@@ -1256,11 +1315,11 @@ function getLinearBranchNav(
     total: ids.length,
     onPrev: () => {
       const nextIdx = (idx - 1 + ids.length) % ids.length;
-      setExpandedPanelId(ids[nextIdx]!);
+      switchToPanel(ids[nextIdx]!);
     },
     onNext: () => {
       const nextIdx = (idx + 1) % ids.length;
-      setExpandedPanelId(ids[nextIdx]!);
+      switchToPanel(ids[nextIdx]!);
     },
   };
 }
@@ -1329,7 +1388,9 @@ function LinearUserBubble({
   return (
     <div className="flex w-full justify-end">
       <div
+        data-message-id={nodeId}
         className={[
+          'scroll-mt-14',
           'group flex max-w-[78%] items-center gap-1',
           // row-reverse: DOM order bubble then control → icon renders left of bubble (no overflow clip)
           !editing ? 'flex-row-reverse' : 'min-w-0 flex-1 flex-col',
@@ -1510,7 +1571,12 @@ function FrozenPanel({
             ) : (
               <div
                 key={msg.nodeId}
-                className={`flex ${msg.role === 'user' ? 'justify-end' : 'w-full justify-start'}`}
+                data-message-id={msg.nodeId}
+                className={[
+                  'scroll-mt-14',
+                  'flex',
+                  msg.role === 'user' ? 'justify-end' : 'w-full justify-start',
+                ].join(' ')}
               >
                 <div
                   className={[
@@ -1679,9 +1745,11 @@ function LivePanel({
             return (
               <div
                 key={`${msg.nodeId}-${i}`}
-                className={
-                  isUser ? 'flex justify-end' : 'flex w-full justify-start'
-                }
+                data-message-id={msg.nodeId}
+                className={[
+                  'scroll-mt-14',
+                  isUser ? 'flex justify-end' : 'flex w-full justify-start',
+                ].join(' ')}
               >
                 <button
                   type="button"

@@ -5,8 +5,19 @@ import { useEffect, useState } from 'react';
 import { FloatingMenu } from '@/ui/FloatingMenu';
 import { useUiStore } from '@/store/uiStore';
 
-const ChatViewUi1 = dynamic(
-  () => import('@/ui/ui1/ChatView').then(mod => mod.ChatViewUi1),
+const ChatViewUi1a = dynamic(
+  () => import('@/ui/ui1a/ChatView').then(mod => mod.ChatViewUi1a),
+  {
+    loading: () => (
+      <div className="flex h-dvh items-center justify-center bg-zinc-50 text-sm text-zinc-600">
+        Loading…
+      </div>
+    ),
+  },
+);
+
+const ChatViewUi1b = dynamic(
+  () => import('@/ui/ui1b/ChatView').then(mod => mod.ChatViewUi1b),
   {
     loading: () => (
       <div className="flex h-dvh items-center justify-center bg-zinc-50 text-sm text-zinc-600">
@@ -47,7 +58,13 @@ export function ClientRoot() {
   return (
     <>
       <FloatingMenu />
-      {activeUi === 'ui2' ? <ChatViewUi2 /> : <ChatViewUi1 />}
+      {activeUi === 'ui2' ? (
+        <ChatViewUi2 />
+      ) : activeUi === 'ui1b' ? (
+        <ChatViewUi1b />
+      ) : (
+        <ChatViewUi1a />
+      )}
     </>
   );
 }

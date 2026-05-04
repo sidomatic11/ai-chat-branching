@@ -2,8 +2,15 @@
 
 import { useMemo } from 'react';
 import { useConversationStore } from '@/store/conversationStore';
+import { BranchSwitcherRail } from './BranchSwitcherRail';
 
-export function UserBranchNav({ userId }: { userId: string }) {
+export function UserBranchNav({
+  userId,
+  align,
+}: {
+  userId: string;
+  align: 'left' | 'right';
+}) {
   const nodes = useConversationStore(s => s.nodes);
   const navigateUserBranch = useConversationStore(s => s.navigateUserBranch);
 
@@ -26,23 +33,27 @@ export function UserBranchNav({ userId }: { userId: string }) {
   if (total <= 1) return null;
 
   return (
-    <div className="flex items-center gap-2 text-xs text-white/80">
+    <BranchSwitcherRail align={align}>
       <button
-        className="rounded-md bg-white/10 px-2 py-1 hover:bg-white/15"
+        type="button"
+        className="grid size-6 place-items-center rounded-md hover:bg-slate-900/[0.05]"
         onClick={() => navigateUserBranch(userId, 'prev')}
+        aria-label="Previous user branch"
       >
-        &lt;
+        <span className="material-symbols-rounded text-[16px]">chevron_left</span>
       </button>
       <span className="tabular-nums">
         {index + 1} / {total}
       </span>
       <button
-        className="rounded-md bg-white/10 px-2 py-1 hover:bg-white/15"
+        type="button"
+        className="grid size-6 place-items-center rounded-md hover:bg-slate-900/[0.05]"
         onClick={() => navigateUserBranch(userId, 'next')}
+        aria-label="Next user branch"
       >
-        &gt;
+        <span className="material-symbols-rounded text-[16px]">chevron_right</span>
       </button>
-    </div>
+    </BranchSwitcherRail>
   );
 }
 

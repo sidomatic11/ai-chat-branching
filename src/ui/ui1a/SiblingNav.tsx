@@ -2,8 +2,15 @@
 
 import { useMemo } from 'react';
 import { useConversationStore } from '@/store/conversationStore';
+import { BranchSwitcherRail } from './BranchSwitcherRail';
 
-export function SiblingNav({ userId }: { userId: string }) {
+export function SiblingNav({
+  userId,
+  align,
+}: {
+  userId: string;
+  align: 'left' | 'right';
+}) {
   const nodes = useConversationStore(s => s.nodes);
   const activePathIds = useConversationStore(s => s.activePathIds);
   const navigateSibling = useConversationStore(s => s.navigateSibling);
@@ -26,23 +33,27 @@ export function SiblingNav({ userId }: { userId: string }) {
   if (total <= 1) return null;
 
   return (
-    <div className="flex items-center gap-2 text-xs text-zinc-600">
+    <BranchSwitcherRail align={align}>
       <button
-        className="rounded-md border border-zinc-200 bg-white px-2 py-1 hover:bg-zinc-50"
+        type="button"
+        className="grid size-6 place-items-center rounded-md hover:bg-slate-900/[0.05]"
         onClick={() => navigateSibling(userId, 'prev')}
+        aria-label="Previous assistant branch"
       >
-        &lt;
+        <span className="material-symbols-rounded text-[16px]">chevron_left</span>
       </button>
       <span className="tabular-nums">
         {index + 1} / {total}
       </span>
       <button
-        className="rounded-md border border-zinc-200 bg-white px-2 py-1 hover:bg-zinc-50"
+        type="button"
+        className="grid size-6 place-items-center rounded-md hover:bg-slate-900/[0.05]"
         onClick={() => navigateSibling(userId, 'next')}
+        aria-label="Next assistant branch"
       >
-        &gt;
+        <span className="material-symbols-rounded text-[16px]">chevron_right</span>
       </button>
-    </div>
+    </BranchSwitcherRail>
   );
 }
 

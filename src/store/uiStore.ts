@@ -2,7 +2,7 @@
 
 import { create } from 'zustand';
 
-export type UiId = 'ui1' | 'ui2';
+export type UiId = 'ui1a' | 'ui1b' | 'ui2';
 
 export type UiStore = {
   activeUi: UiId;
@@ -17,7 +17,8 @@ function readPersistedUi(): UiId | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(UI_STORAGE_KEY);
-    if (raw === 'ui1' || raw === 'ui2') return raw;
+    if (raw === 'ui1a' || raw === 'ui1b' || raw === 'ui2') return raw;
+    if (raw === 'ui1') return 'ui1a';
     return null;
   } catch {
     return null;
