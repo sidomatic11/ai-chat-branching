@@ -129,7 +129,7 @@ export function ChatViewUi1b() {
           </div>
         </main>
 
-        <div className="pointer-events-none fixed inset-x-0 bottom-0 bg-gradient-to-t from-slate-50 via-slate-50 to-slate-50/0 pt-12 sm:left-12">
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-10 bg-gradient-to-t from-slate-50 via-slate-50 to-slate-50/0 pt-12 sm:left-12">
           <div className="mx-auto w-full max-w-[752px] px-4 pb-4 sm:px-6">
             <div className="pointer-events-auto flex w-full flex-col gap-2.5">
               <Input />
