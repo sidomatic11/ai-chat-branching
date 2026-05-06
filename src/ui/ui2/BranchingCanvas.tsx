@@ -1455,7 +1455,9 @@ function LinearUserBubble({
         data-message-id={nodeId}
         className={[
           'scroll-mt-14',
-          'group flex w-full max-w-none items-center gap-1',
+          editing
+            ? 'group flex w-full max-w-none items-center gap-1'
+            : 'group flex max-w-[78%] items-center gap-1',
           // row-reverse: DOM order bubble then control → icon renders left of bubble (no overflow clip)
           !editing ? 'flex-row-reverse' : 'min-w-0 flex-1 flex-col',
         ].join(' ')}
@@ -1522,7 +1524,7 @@ function LinearUserBubble({
           </div>
         ) : (
           <>
-            <div className="min-w-0 flex-1 rounded-xl bg-slate-200 px-4 py-2 text-slate-800">
+            <div className="max-w-full rounded-xl bg-slate-200 px-4 py-2 text-slate-800">
               {content.trim().length === 0 ? (
                 <span className="opacity-50">(empty)</span>
               ) : (
