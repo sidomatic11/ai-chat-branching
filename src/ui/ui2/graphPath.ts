@@ -1,5 +1,6 @@
 import type { MessageNode } from '@/store/conversationStore';
 import { getPathToRootIds, ROOT_ID } from '@/store/conversationStore';
+import type { CanvasPanelState } from '@/ui/ui2/canvasTypes';
 
 export type FlatMsg = {
   role: 'user' | 'assistant';
@@ -129,6 +130,30 @@ export function flattenLivePanel(
     }
   }
   return out;
+}
+
+/**
+ * Last message id shown in a panel’s linear transcript — shared fork tail when switching canvas siblings.
+ * Matches FrozenPanel / LivePanel flatten rules.
+ */
+export function getPanelTerminalMessageId(
+  panel: CanvasPanelState,
+  panels: Record<string, CanvasPanelState>,
+  nodes: Record<string, MessageNode>,
+): string | null {
+  if (panel.kind === 'live') {
+    const flat = flattenLivePanel(nodes, panel.headUserId, panel.tailLeafId);
+    const last = flat[flat.length - 1];
+    return last ? last.nodeId : null;
+  }
+  let trimAfterNodeId: string | null = null;
+  if (panel.canvasParentId) {
+    const parent = panels[panel.canvasParentId];
+    if (parent?.kind === 'frozen') trimAfterNodeId = parent.throughId;
+  }
+  const flat = flattenFrozenThroughInContext(nodes, panel.throughId, trimAfterNodeId);
+  const last = flat[flat.length - 1];
+  return last ? last.nodeId : null;
 }
 
 export function firstUserChildOfRoot(

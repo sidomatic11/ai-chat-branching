@@ -11,6 +11,7 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import {
   ROOT_ID,
+  readMessageAnchorOffset,
   UI2_LINEAR_SCROLL_CONTAINER_ID,
   useConversationStore,
 } from '@/store/conversationStore';
@@ -30,6 +31,7 @@ import {
   computeLatestLeafFromUserHead,
   flattenFrozenThroughInContext,
   flattenLivePanel,
+  getPanelTerminalMessageId,
   latestAssistantId,
 } from '@/ui/ui2/graphPath';
 import type { CollapseViewportAnchor } from '@/ui/ui2/viewportSync';
@@ -104,6 +106,10 @@ export function BranchingCanvas() {
   const zoomBadgeRef = useRef<HTMLDivElement | null>(null);
   const linearScrollRef = useRef<HTMLDivElement | null>(null);
   const linearBranchScrollCompensationRef = useRef<number | null>(null);
+  const pendingLinearBranchAnchorRef = useRef<{
+    nodeId: string;
+    offsetBefore: number;
+  } | null>(null);
   const skipCenterScrollOnceRef = useRef(false);
   const expandedModeRef = useRef(false);
   const pendingExpandRef = useRef<PendingExpandFlip | null>(null);
@@ -813,17 +819,41 @@ export function BranchingCanvas() {
     (nextPanelId: string) => {
       if (expandedPanelId) {
         const scrollEl = linearScrollRef.current;
-        const wrap = flipWrapRefs.current.get(expandedPanelId);
-        if (scrollEl && wrap) {
-          linearBranchScrollCompensationRef.current =
-            wrap.getBoundingClientRect().top -
-            scrollEl.getBoundingClientRect().top;
+        let usedMessageAnchor = false;
+        const childPanel = panels[nextPanelId];
+        const parentId = childPanel?.canvasParentId ?? null;
+        if (scrollEl && parentId) {
+          const parentPanel = panels[parentId];
+          if (parentPanel) {
+            const anchorId = getPanelTerminalMessageId(parentPanel, panels, nodes);
+            if (anchorId) {
+              const offsetBefore = readMessageAnchorOffset(scrollEl, anchorId);
+              if (offsetBefore != null) {
+                pendingLinearBranchAnchorRef.current = {
+                  nodeId: anchorId,
+                  offsetBefore,
+                };
+                linearBranchScrollCompensationRef.current = null;
+                usedMessageAnchor = true;
+              }
+            }
+          }
+        }
+        if (!usedMessageAnchor && scrollEl) {
+          const wrap = flipWrapRefs.current.get(expandedPanelId);
+          if (wrap) {
+            linearBranchScrollCompensationRef.current =
+              wrap.getBoundingClientRect().top -
+              scrollEl.getBoundingClientRect().top;
+          }
+        }
+        if (usedMessageAnchor || linearBranchScrollCompensationRef.current !== null) {
           skipCenterScrollOnceRef.current = true;
         }
       }
       setExpandedPanelId(nextPanelId);
     },
-    [expandedPanelId],
+    [expandedPanelId, panels, nodes],
   );
 
   const isExpanded = expandedPanelId != null;
@@ -929,6 +959,26 @@ export function BranchingCanvas() {
 
   /** Linear: after sibling-panel branch nav, keep viewport stable (see switchLinearBranchPanel). */
   useLayoutEffect(() => {
+    const anchorPending = pendingLinearBranchAnchorRef.current;
+    if (anchorPending !== null) {
+      pendingLinearBranchAnchorRef.current = null;
+      if (expandedPanelId != null) {
+        const scrollEl = linearScrollRef.current;
+        if (scrollEl) {
+          const el = scrollEl.querySelector(
+            `[data-message-id="${anchorPending.nodeId}"]`,
+          );
+          if (el instanceof HTMLElement) {
+            const cr = scrollEl.getBoundingClientRect();
+            const er = el.getBoundingClientRect();
+            const offsetAfter = er.top - cr.top;
+            scrollEl.scrollTop += anchorPending.offsetBefore - offsetAfter;
+          }
+        }
+      }
+      return;
+    }
+
     const pending = linearBranchScrollCompensationRef.current;
     if (pending === null || expandedPanelId == null) return;
     const scrollEl = linearScrollRef.current;
@@ -1081,7 +1131,7 @@ export function BranchingCanvas() {
           <div
             id={UI2_LINEAR_SCROLL_CONTAINER_ID}
             ref={linearScrollRef}
-            className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4"
+            className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 pt-4 pb-56"
             style={{ WebkitOverflowScrolling: 'touch' }}
             onPointerDownCapture={e => {
               if (flipLock || !linearFooterComposerPanel) return;
@@ -1163,8 +1213,11 @@ export function BranchingCanvas() {
             </div>
           </div>
           {linearFooterComposerPanel ? (
-            <div className="shrink-0 bg-white px-3 pb-6 pt-2 sm:px-4">
-              <div className="mx-auto w-full" style={{ width: NODE_WIDTH, maxWidth: '100%' }}>
+            <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-white via-white/90 to-transparent px-3 pb-10 pt-10 sm:px-4">
+              <div
+                className="pointer-events-auto mx-auto w-full"
+                style={{ width: NODE_WIDTH, maxWidth: '100%' }}
+              >
                 <div className="w-full rounded-3xl border border-slate-200/90 bg-white shadow-[0_10px_40px_rgba(15,23,42,0.08)]">
                   <div className="flex flex-col gap-4 px-4 pb-3 pt-4 sm:px-5 sm:pb-3.5 sm:pt-5">
                     <textarea
@@ -1297,31 +1350,13 @@ function ExpandNodeButton({
         onPress();
       }}
     >
-      <svg
-        width="18"
-        height="18"
-        viewBox="0 0 24 24"
-        fill="none"
+      <span
+        className="material-symbols-rounded leading-none"
+        style={{ fontSize: 20 }}
         aria-hidden
       >
-        {isExpandedFocus ? (
-          <path
-            d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        ) : (
-          <path
-            d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        )}
-      </svg>
+        {isExpandedFocus ? 'zoom_out_map' : 'zoom_in_map'}
+      </span>
     </button>
   );
 }

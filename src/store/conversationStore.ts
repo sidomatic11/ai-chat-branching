@@ -62,16 +62,24 @@ export type Ui1ScrollIntent =
   | { kind: 'pinUser'; userId: string }
   | { kind: 'anchor'; nodeId: string; offsetBefore: number | null };
 
-/** Measure message node top relative to UI1 scroll container (client coords delta). */
-export function readUi1AnchorOffset(nodeId: string): number | null {
-  if (typeof document === 'undefined') return null;
-  const container = document.getElementById(UI1_SCROLL_CONTAINER_ID);
-  if (!container) return null;
+/** Message top minus scrollport top (viewport client coords), for branch scroll compensation. */
+export function readMessageAnchorOffset(
+  container: HTMLElement,
+  nodeId: string,
+): number | null {
   const el = container.querySelector(`[data-message-id="${nodeId}"]`);
   if (!el) return null;
   const er = el.getBoundingClientRect();
   const cr = container.getBoundingClientRect();
   return er.top - cr.top;
+}
+
+/** Measure message node top relative to UI1 scroll container (client coords delta). */
+export function readUi1AnchorOffset(nodeId: string): number | null {
+  if (typeof document === 'undefined') return null;
+  const container = document.getElementById(UI1_SCROLL_CONTAINER_ID);
+  if (!container) return null;
+  return readMessageAnchorOffset(container, nodeId);
 }
 
 export type ConversationStore = {
