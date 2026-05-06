@@ -1455,7 +1455,7 @@ function LinearUserBubble({
         data-message-id={nodeId}
         className={[
           'scroll-mt-14',
-          'group flex max-w-[78%] items-center gap-1',
+          'group flex w-full max-w-none items-center gap-1',
           // row-reverse: DOM order bubble then control → icon renders left of bubble (no overflow clip)
           !editing ? 'flex-row-reverse' : 'min-w-0 flex-1 flex-col',
         ].join(' ')}
@@ -1473,36 +1473,51 @@ function LinearUserBubble({
               disabled={isStreaming}
               className="mt-2 w-full min-h-[5rem] resize-y rounded-lg border border-slate-200 bg-white/90 px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400"
             />
-            <div className="mt-1.5 flex justify-end gap-1.5">
-              <button
-                type="button"
-                disabled={isStreaming}
-                className="rounded-md px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-300/60"
-                onMouseDown={e => e.stopPropagation()}
-                onClick={e => {
-                  e.stopPropagation();
-                  setEditing(false);
-                  setDraft('');
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isStreaming || draft.trim().length === 0}
-                className="rounded-md bg-slate-800 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-40"
-                onMouseDown={e => e.stopPropagation()}
-                onClick={e => {
-                  e.stopPropagation();
-                  void (async () => {
-                    await editAndResend(nodeId, draft);
+            <div className="mt-1.5 pb-2 flex items-center justify-between gap-4">
+              <div className="flex min-w-0 items-start gap-2 text-[12px] leading-5 text-slate-600">
+                <span
+                  className="material-symbols-rounded mt-[3px] shrink-0 !text-[14px] leading-none text-slate-500"
+                  aria-hidden
+                >
+                  info
+                </span>
+                <span className="min-w-0">
+                  Editing this message will create a new conversation branch. You can switch
+                  between branches using the arrow navigation buttons.
+                </span>
+              </div>
+
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isStreaming}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-100 disabled:opacity-40"
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={e => {
+                    e.stopPropagation();
                     setEditing(false);
                     setDraft('');
-                  })();
-                }}
-              >
-                Resend
-              </button>
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isStreaming || draft.trim().length === 0}
+                  className="rounded-lg bg-slate-600 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-40"
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={e => {
+                    e.stopPropagation();
+                    void (async () => {
+                      await editAndResend(nodeId, draft);
+                      setEditing(false);
+                      setDraft('');
+                    })();
+                  }}
+                >
+                  Save
+                </button>
+              </div>
             </div>
           </div>
         ) : (
