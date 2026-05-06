@@ -52,7 +52,7 @@ export function BranchSwitcherDots({
         aria-hidden
       />
       <div
-        className={['relative z-[1] flex min-w-0 items-center gap-2', clusterAlign].join(' ')}
+        className={['relative z-[1] flex min-w-0 items-center gap-1.5', clusterAlign].join(' ')}
       >
         <button
           type="button"
@@ -64,14 +64,15 @@ export function BranchSwitcherDots({
           <span className="material-symbols-rounded text-[18px] leading-none">chevron_left</span>
         </button>
         <div
-          className="flex items-center gap-2 px-0.5"
+          className="flex items-center gap-1.5"
           aria-label={`${branchCount} branches`}
         >
           {Array.from({ length: branchCount }, (_, i) => (
             <span
               key={i}
               className={[
-                'size-1.5 shrink-0 rounded-full bg-slate-300 transition-colors',
+                // 8×8 dot with a 4px outside stroke matching the header background.
+                'size-2 shrink-0 rounded-full bg-slate-300 ring-[6px] ring-white transition-colors',
                 i === activeIndex ? 'group-hover:bg-slate-700' : '',
               ].join(' ')}
               aria-hidden
