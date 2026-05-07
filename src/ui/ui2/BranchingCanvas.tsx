@@ -1245,7 +1245,8 @@ export function BranchingCanvas() {
                     <div className="flex items-center justify-between gap-3">
                       <button
                         type="button"
-                        className="grid size-8 shrink-0 cursor-pointer place-items-center rounded-full text-slate-600 hover:bg-slate-900/[0.05]"
+                        disabled
+                        className="grid size-8 shrink-0 cursor-not-allowed place-items-center rounded-full text-slate-300"
                         aria-label="Attach placeholder"
                         onMouseDown={e => e.stopPropagation()}
                       >
@@ -1254,7 +1255,8 @@ export function BranchingCanvas() {
                       <div className="flex shrink-0 items-center gap-1 sm:gap-2">
                         <button
                           type="button"
-                          className="flex max-w-[min(52vw,14rem)] cursor-pointer items-center gap-0.5 rounded-lg py-1 pl-2 pr-1.5 text-left text-[13px] text-slate-600 hover:bg-slate-900/[0.04] sm:max-w-none"
+                          disabled
+                          className="flex max-w-[min(52vw,14rem)] cursor-not-allowed items-center gap-0.5 rounded-lg py-1 pl-2 pr-1.5 text-left text-[13px] text-slate-400 sm:max-w-none"
                           aria-label="Model: gemini 2.5 flash"
                           onMouseDown={e => e.stopPropagation()}
                         >
@@ -1265,7 +1267,8 @@ export function BranchingCanvas() {
                         </button>
                         <button
                           type="button"
-                          className="grid size-8 cursor-pointer place-items-center rounded-full text-slate-600 hover:bg-slate-900/[0.05]"
+                          disabled
+                          className="grid size-8 cursor-not-allowed place-items-center rounded-full text-slate-300"
                           aria-label="Voice placeholder"
                           onMouseDown={e => e.stopPropagation()}
                         >
@@ -1793,7 +1796,7 @@ function LivePanel({
       <div className="flex flex-col gap-4 px-3.5 py-3.5">
         {!panel.headUserId ? (
           <p className="px-2 py-7 text-center text-[13px] text-zinc-400">
-            Type below to start this thread.
+            Type below to start this chat. Edit your message to create a branch.
           </p>
         ) : flat.length === 0 ? (
           <p className="px-2 py-7 text-center text-[13px] text-zinc-400">

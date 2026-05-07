@@ -9,6 +9,8 @@ export function FloatingMenu() {
   const activeUi = useUiStore(s => s.activeUi);
   const setActiveUi = useUiStore(s => s.setActiveUi);
 
+  if (process.env.NODE_ENV !== 'development') return null;
+
   const chip = (active: boolean) =>
     [
       'rounded-lg px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap',

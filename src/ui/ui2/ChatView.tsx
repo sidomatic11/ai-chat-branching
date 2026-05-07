@@ -7,6 +7,7 @@ export function ChatViewUi2() {
   const isStreaming = useConversationStore(s => s.isStreaming);
   const error = useConversationStore(s => s.error);
   const clearError = useConversationStore(s => s.clearError);
+  const clearConversation = useConversationStore(s => s.clearConversation);
 
   return (
     <div className="relative h-dvh bg-zinc-950 text-zinc-50">
@@ -22,7 +23,15 @@ export function ChatViewUi2() {
             <div className="flex flex-1 justify-end">
               {isStreaming ? (
                 <div className="text-xs text-white/60">Streaming…</div>
-              ) : null}
+              ) : (
+                <button
+                  type="button"
+                  onClick={clearConversation}
+                  className="cursor-pointer rounded-lg px-2.5 py-1.5 text-xs font-medium text-white/75 hover:bg-white/10 hover:text-white"
+                >
+                  Clear chat
+                </button>
+              )}
             </div>
           </div>
         </header>
