@@ -14,7 +14,7 @@ export function ChatViewUi2() {
 
       <div className="relative flex h-dvh min-h-0 flex-col">
         <header className="shrink-0 border-b border-white/10 bg-white/5 backdrop-blur">
-          <div className="mx-auto flex w-full max-w-4xl items-center px-4 py-3">
+          <div className="mx-auto flex w-full max-w-4xl items-center px-4 py-4">
             <div className="flex-1" aria-hidden />
             <div className="shrink-0 text-center text-sm font-medium tracking-wide">
               Branching Chat Prototype (UI2)

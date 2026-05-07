@@ -1326,7 +1326,7 @@ function ExpandNodeButton({
 }) {
   const className = branchRail
     ? [
-        'grid size-7 shrink-0 cursor-pointer place-items-center rounded-md border border-slate-200/90 bg-slate-100 text-slate-600',
+        'ml-3 grid size-7 shrink-0 cursor-pointer place-items-center rounded-md border border-slate-200/90 bg-slate-100 text-slate-600',
         'pointer-events-none opacity-0 transition-opacity',
         'group-hover:pointer-events-auto group-hover:opacity-100',
         'hover:bg-slate-200/90 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400',
